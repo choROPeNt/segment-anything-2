@@ -9,4 +9,7 @@ _C.*
 outputs/*
 checkpoints/*.pt
 
-notebooks/
+notebooks/annotations
+notebooks/data
+notebooks/images
+notebooks/results
