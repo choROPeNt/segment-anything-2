@@ -10,5 +10,7 @@ outputs/*
 checkpoints/*.pt
 demo/backend/checkpoints/*.pt
 
-notebooks/
-notebooks/
+notebooks/annotations
+notebooks/data
+notebooks/images
+notebooks/results
