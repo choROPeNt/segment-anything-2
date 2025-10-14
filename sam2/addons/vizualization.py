@@ -198,14 +198,24 @@ def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
             subimg[m] = color_mask
 
             if borders:
+                # find contours in the mask
                 cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
                 for cnt in cnts:
                     if cnt.ndim != 3 or cnt.shape[0] < 2:
                         continue
-                    pts = cnt[:, 0, :]
-                    xs = pts[:, 0] + xmin
-                    ys = pts[:, 1] + ymin
-                    # ax.plot(xs, ys, linewidth=1.0, color=(1, 1, 1, 0.4))
+
+                    # shift contour coordinates by (xmin, ymin)
+                    cnt_shifted = cnt + np.array([[xmin, ymin]])
+
+                    # draw directly on image (in-place)
+                    cv2.drawContours(
+                        img,                     # image to draw on
+                        [cnt_shifted],           # list of contours
+                        -1,                      # draw all contours
+                        color=(0.5, 0.5, 0.5, alpha),   # mid-gray, full alpha
+                        thickness=3,             # 1-pixel wide line
+                        lineType=cv2.LINE_AA     # smooth edges
+                    )
 
         elif isinstance(seg_full, np.ndarray) and seg_full.ndim == 2:
             m = seg_full.astype(bool)
