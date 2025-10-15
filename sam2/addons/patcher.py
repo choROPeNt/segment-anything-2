@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict, Any, Sequence
 
 
 @dataclass
-class Sam2Tiler:
+class Sam2Patcher:
     """
     Tiling & stitching helper for SAM2-style instance dicts.
 
@@ -34,44 +34,39 @@ class Sam2Tiler:
 
     # ----------------------------- public API ---------------------------------
 
-    def tile_numpy(self, img: np.ndarray) -> Tuple[np.ndarray, List[Tuple[int, int]], Tuple[int, int, int]]:
+    def tile_numpy(self, img: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int, int]]:
         """
-        Split an (H, W, 3) image into overlapping patches (N, patch_h, patch_w, 3).
+        Split an (H, W, 3) image into overlapping patches. Patches at the right/bottom
+        edge automatically fall back to the minimum available size (no padding).
 
         Returns
         -------
-        patches : np.ndarray
-            Array of patches with shape (N, patch_h, patch_w, 3).
+        patches : list[np.ndarray]
+            List of patches; each has shape (h_i, w_i, 3), where h_i<=patch_h and w_i<=patch_w.
         offsets : list[tuple[int,int]]
-            Top-left (y0, x0) offsets of each patch in *padded* coordinates.
-        padded_shape : tuple[int,int,int]
-            Shape of the (possibly) padded image used for tiling.
+            Top-left (y0, x0) offsets of each patch in ORIGINAL image coordinates.
+        canvas_shape : tuple[int,int,int]
+            The original image shape (H, W, 3); useful for stitching later.
         """
         assert img.ndim == 3 and img.shape[-1] == 3, "Expected (H, W, 3) image"
         H, W, _ = img.shape
+
         ys = self._positions(H, self.patch_h, self.overlap_h)
         xs = self._positions(W, self.patch_w, self.overlap_w)
 
-        pad_bottom = max(0, (ys[-1] + self.patch_h) - H)
-        pad_right  = max(0, (xs[-1] + self.patch_w) - W)
-        if pad_bottom or pad_right:
-            pad_cfg = ((0, pad_bottom), (0, pad_right), (0, 0))
-            if self.pad_mode == "reflect":
-                img_p = np.pad(img, pad_cfg, mode="reflect")
-            elif self.pad_mode == "constant":
-                img_p = np.pad(img, pad_cfg, mode="constant", constant_values=self.pad_value)
-            else:
-                raise ValueError("pad_mode must be 'reflect' or 'constant'")
-        else:
-            img_p = img
+        patches: List[np.ndarray] = []
+        offsets: List[Tuple[int, int]] = []
 
-        patches, offsets = [], []
         for y0 in ys:
             for x0 in xs:
-                patches.append(img_p[y0:y0 + self.patch_h, x0:x0 + self.patch_w, :])
+                y1 = min(y0 + self.patch_h, H)
+                x1 = min(x0 + self.patch_w, W)
+                # copy() so downstream transforms don’t mutate the original backing memory
+                patch = img[y0:y1, x0:x1, :].copy()
+                patches.append(patch)
                 offsets.append((y0, x0))
 
-        return np.stack(patches, axis=0), offsets, img_p.shape
+        return patches, offsets, img.shape
 
 
 
