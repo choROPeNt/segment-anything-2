@@ -18,3 +18,5 @@ notebooks/annotations
 notebooks/data
 notebooks/images
 notebooks/results
+
+results/
