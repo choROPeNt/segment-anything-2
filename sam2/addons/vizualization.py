@@ -120,6 +120,8 @@ def overlay_from_instances(
 
 
 
+
+
 def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
     """
     Draws annotations on an RGBA canvas.
@@ -137,8 +139,8 @@ def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
         return
 
     sorted_anns = sorted(anns, key=lambda x: x.get('area', 0), reverse=True)
-    # ax = plt.gca()
-    # ax.set_autoscale_on(False)
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
 
     # ---- determine canvas size ----
     if canvas_shape is not None:
@@ -229,5 +231,5 @@ def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
                     pts = cnt[:, 0, :]
                     # ax.plot(pts[:, 0], pts[:, 1], linewidth=1.0, color=(0, 0, 1, 0.4))
 
-    # ax.imshow(img)
+    ax.imshow(img)
     return (img)
