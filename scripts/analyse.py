@@ -12,6 +12,16 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1" # quite nice life hack
 import numpy as np
 
 import torch
+# Force new TF32 API settings
+torch.backends.cuda.matmul.fp32_precision = "tf32"
+torch.backends.cudnn.conv.fp32_precision = "tf32"
+
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*Please use the new API settings to control TF32 behavior.*",
+)
+
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
@@ -40,6 +50,9 @@ def select_device():
     # select the device for computation
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        print("matmul:", torch.backends.cuda.matmul.fp32_precision)
+        print("cudnn conv:", torch.backends.cudnn.conv.fp32_precision)
+
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
@@ -265,11 +278,15 @@ def main(args,
             desc="Mask generation",
             unit="patch"
         ):
-            print(p.shape)
             ## detect masks per patch
             detections = mask_generator.generate(p)
             ## gather results
-            all_detections.append(detections)
+            if args.max_area:
+                max_area = args.max_area
+                filterd = [d for d in detections if d["area"] < max_area]
+                all_detections.append(filterd)
+            else:
+                all_detections.append(detections)
 
         
 
@@ -300,6 +317,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='Path to input data')
     parser.add_argument('--output', type=str, required=False, help='Path to save analysis results')
+    parser.add_argument('--max_area',default = None, type=float, required=False, help='Filter argument for Filtering')
     args = parser.parse_args()
     
     # Check that input is a directory
