@@ -228,8 +228,8 @@ def main(args,
     #------------------------
     device = select_device()
 
-    sam2_checkpoint = "./checkpoints/sam2_hiera_tiny.pt"
-    model_cfg = "sam2_hiera_t.yaml"
+    sam2_checkpoint = "./checkpoints/sam2.1_hiera_tiny.pt"
+    model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=True)
 
@@ -297,6 +297,15 @@ def main(args,
             debug=False,
         )
 
+        if args.save_fig:
+            plt.figure()
+            plt.imshow(image)
+            show_anns(instances)
+            plt.axis("off")
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_path,f"{file_name}_results.png"),dpi=300)
+
+
         if was_grayscale and image.ndim == 3:
             # test if all channels are equal (typical for grayscale expanded to RGB)
             if np.allclose(image[..., 0], image[..., 1]) and np.allclose(image[..., 1], image[..., 2]):
@@ -315,9 +324,36 @@ def main(args,
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, required=True, help='Path to input data')
-    parser.add_argument('--output', type=str, required=False, help='Path to save analysis results')
-    parser.add_argument('--max_area',default = None, type=float, required=False, help='Filter argument for Filtering')
+    parser.add_argument(
+        '--input',
+        type=str,
+        required=True,
+        help='Path to the input dataset dir or file to be analyzed.'
+    )
+
+    parser.add_argument(
+        '--output',
+        type=str,
+        required=False,
+        default=None,
+        help='Optional path to save the analysis results (e.g. HDF5, or image outputs).'
+    )
+
+    parser.add_argument(
+        '--max_area',
+        type=float,
+        required=False,
+        default=None,
+        help='Optional area threshold for filtering small or large regions. Use None to disable filtering.'
+    )
+
+    parser.add_argument(
+        '--save_fig',
+        action='store_true',
+        help='If set, saves generated figures instead of only displaying them.'
+    )
+
+    
     args = parser.parse_args()
     
     # Check that input is a directory
@@ -326,7 +362,7 @@ if __name__ == "__main__":
         print("Input is a directory")
     else:
         args.dir_flag = False
-        print("INput is a single file ")
+        print("Input is a single file ")
 
 
     # If output not given → create results folder in input path
