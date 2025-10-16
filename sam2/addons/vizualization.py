@@ -16,7 +16,7 @@ def overlay_from_instances(
     border_alpha=0.9,
     border_px=1,
     seed=None                   # set for reproducible pseudo-colors if no 'id'
-):
+    ):
     """
     Build an RGBA overlay (float32 in [0,1]) from instance annotations, no plotting.
 
