@@ -32,6 +32,36 @@ seed = 3
 random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
 
+def select_device():
+    """
+    short function to select the device for computation (CUDA/CPU/MPS)
+    returns the selected torch device
+    """
+    # select the device for computation
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    print(f"using device: {device}")
+
+    if device.type == "cuda":
+        # use bfloat16 for the entire notebook
+        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+        # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
+        if torch.cuda.get_device_properties(0).major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+    elif device.type == "mps":
+        print(
+            "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
+            "\ngive numerically different outputs and sometimes degraded performance on MPS. "
+            "\nSee e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
+    )
+    return device
+
 def load_image_from_path(file_path):
     """
     Load multiple images (grayscale or RGB) into NumPy arrays.
@@ -64,131 +94,6 @@ def load_image_from_path(file_path):
 
     return image_np, was_grayscale
 
-
-
-# def save_patch_group(
-#     f: h5py.File,
-#     idx: int,
-#     patch: np.ndarray,              # (H,W,3) RGB uint8 (what SAM2 used)
-#     offset: tuple,                  # (y0, x0)
-#     detections: list,               # list of dicts with 'segmentation', 'area', 'bbox', 'predicted_iou'
-#     was_grayscale: bool,            # original image was grayscale?
-#     compression: str = "lzf"        # "lzf" fast; use "gzip" for smaller files
-# ):
-#     H, W = patch.shape[:2]
-#     g = f.require_group(f"/patches/patch_{idx:03d}")
-
-#     # ---- 1) image (store gray if original was gray) + offset ----
-#     if was_grayscale:
-#         # BT.709 luma to keep perceptual brightness (uint8)
-#         patch_gray = np.clip(
-#             0.2126 * patch[..., 0] + 0.7152 * patch[..., 1] + 0.0722 * patch[..., 2],
-#             0, 255
-#         ).round().astype(np.uint8)
-
-#         # (Re)create dataset as (H,W)
-#         need_recreate = "data" in g and g["data"].shape != (H, W)
-#         if "data" not in g or need_recreate:
-#             if "data" in g: del g["data"]
-#             g.create_dataset(
-#                 "data", data=patch_gray, compression=compression, shuffle=True,
-#                 chunks=(min(256, H), min(256, W))
-#             )
-#         else:
-#             g["data"][...] = patch_gray
-
-#         C_saved = 1
-
-#     else:
-#         # Store RGB as-is (H,W,3)
-#         need_recreate = "data" in g and g["data"].shape != (H, W, 3)
-#         if "data" not in g or need_recreate:
-#             if "data" in g: del g["data"]
-#             g.create_dataset(
-#                 "data", data=patch.astype(np.uint8, copy=False),
-#                 compression=compression, shuffle=True,
-#                 chunks=(min(256, H), min(256, W), 3)
-#             )
-#         else:
-#             g["data"][...] = patch.astype(np.uint8, copy=False)
-
-#         C_saved = 3
-
-#     if "offset" not in g:
-#         g.create_dataset("offset", data=np.asarray(offset, dtype=np.int32))
-
-#     # ---- 2) detections → stacked arrays (N,H,W) + metadata ----
-#     segs, areas, bboxes, scores = [], [], [], []
-#     for det in (detections or []):
-#         m = det.get("segmentation")
-#         if m is None:
-#             continue
-#         m = np.asarray(m, dtype=bool)
-#         if m.shape != (H, W):
-#             raise ValueError(f"Segmentation shape {m.shape} != patch {(H, W)}")
-#         if not m.any():
-#             continue
-
-#         segs.append(m.astype(np.uint8))  # 0/1; compresses very well
-#         areas.append(int(det.get("area", int(m.sum()))))
-
-#         bbox = det.get("bbox")
-#         if bbox is None:
-#             ys, xs = np.where(m)
-#             x0, y0 = int(xs.min()), int(ys.min())
-#             x1, y1 = int(xs.max() + 1), int(ys.max() + 1)
-#             bbox = [x0, y0, x1 - x0, y1 - y0]
-#         bboxes.append([int(b) for b in bbox])
-
-#         scores.append(float(det.get("predicted_iou", 0.0)))
-
-#     N = len(segs)
-
-#     # (Re)create per-detection datasets to exact sizes
-#     for name in ("segmentation", "area", "bbox", "predicted_iou"):
-#         if name in g:
-#             del g[name]
-
-#     g.create_dataset(
-#         "segmentation", shape=(N, H, W), dtype=np.uint8,
-#         compression=compression, shuffle=True, chunks=(1, H, W)
-#     )
-#     if N:
-#         g["segmentation"][...] = np.stack(segs, axis=0)
-
-#     g.create_dataset(
-#         "area",
-#         data=(np.asarray(areas, dtype=np.int32) if N else np.empty((0,), np.int32)),
-#         compression=compression, shuffle=True, chunks=(max(1, min(8192, N)),)
-#     )
-#     g.create_dataset(
-#         "bbox",
-#         data=(np.asarray(bboxes, dtype=np.int32) if N else np.empty((0, 4), np.int32)),
-#         compression=compression, shuffle=True, chunks=(max(1, min(2048, N)), 4)
-#     )
-#     g.create_dataset(
-#         "predicted_iou",
-#         data=(np.asarray(scores, dtype=np.float32) if N else np.empty((0,), np.float32)),
-#         compression=compression, shuffle=True, chunks=(max(1, min(8192, N)),)
-#     )
-
-#     # ---- 3) metadata ----
-#     g.attrs["H"] = H
-#     g.attrs["W"] = W
-#     g.attrs["C_saved"] = C_saved            # 1 for gray, 3 for RGB (on disk)
-#     g.attrs["was_grayscale"] = bool(was_grayscale)  # original image info
-#     g.attrs["n_detections"] = N
-
-# def load_patch_group(f: h5py.File, idx: int):
-#     g = f[f"/patches/patch_{idx:03d}"]
-#     img   = g["data"][...]                          # (H,W,C) uint8
-#     off   = tuple(g["offset"][...].tolist())        # (y0, x0)
-#     seg   = g["segmentation"][...]                  # (N,H,W) uint8
-#     area  = g["area"][...].astype(int)
-#     bbox  = g["bbox"][...].astype(int)              # (N,4)
-#     piou  = g["predicted_iou"][...].astype(float)   # (N,)
-#     return img, off, seg.astype(bool), area, bbox, piou
-
 def delete_h5_if_exists(h5_path: str) -> None:
     if os.path.exists(h5_path):
         try:
@@ -198,37 +103,6 @@ def delete_h5_if_exists(h5_path: str) -> None:
             raise RuntimeError(f"Cannot delete {h5_path} (file may be open elsewhere): {e}")
     else:
         print(f"No existing HDF5 at {h5_path} — nothing to delete.")
-
-def select_device():
-    """
-    short function to select the device for computation (CUDA/CPU/MPS)
-    returns the selected torch device
-    """
-    # select the device for computation
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-
-    print(f"using device: {device}")
-
-    if device.type == "cuda":
-        # use bfloat16 for the entire notebook
-        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-        # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
-        if torch.cuda.get_device_properties(0).major >= 8:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-    elif device.type == "mps":
-        print(
-            "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
-            "\ngive numerically different outputs and sometimes degraded performance on MPS. "
-            "\nSee e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
-    )
-    return device
-
 
 def write_h5(path: str, dict_out: dict, overwrite: bool = True):
     """
@@ -305,7 +179,9 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
         print(f"  ├─ mask shape    : {dict_out['mask'].shape if 'mask' in dict_out else None}")
         print(f"  └─ instances     : {n_inst}")
 
-
+#------------------
+#------ MAIN ------
+#------------------
 def main(args,
         valid_exts=(".png", ".jpg", ".jpeg", ".tif", ".tiff")
         ):
@@ -416,46 +292,11 @@ def main(args,
         }
 
         write_h5(path = os.path.join(output_path,file_name + ".h5"), dict_out= dict_out)
-        # fig, ax = plt.subplots(2,2, figsize=(20,10))
-        # ax = ax.flatten()
-
-        # ax[0].imshow(image,cmap="gray" if was_grayscale else None)  
-        # ax[0].axis('off')
-        # ax[0].set_title("Input image")
-
-        # ax[1].imshow(label_map,cmap="plasma")
-        # ax[1].axis('off')
-        # ax[1].set_title(f"Label map - {len(instances)} masks")
-
-        # ax[2].imshow(image,cmap="gray" if was_grayscale else None)
-        # instance_map = show_anns(instances, alpha=0.5)
-        # ax[2].imshow(instance_map)
-        # ax[2].axis('off')
-        # ax[2].set_title(f"Overlay - {len(instances)} masks")
-
-        # ax[3].imshow(label_map > 0,cmap="gray")
-        # ax[3].axis('off')
-        # ax[3].set_title(f"Mask coverage - {100* (label_map > 0).sum()/label_map.size:.1f}% area")
 
 
-        # plt.tight_layout()
-        # plt.show()
-        # plt.savefig(os.path.join(output_path, f"{file_name}_results.png"), bbox_inches='tight', dpi=150)
-
-
-        # plt.close()
-
-
-
-            
-        #     h5f.create_dataset("image", image, dtype = np.uint8, compression="gzip", shuffle=True)
-
-
-
-
-
-
+#------------------
 if __name__ == "__main__":
+    
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='Path to input data')
     parser.add_argument('--output', type=str, required=False, help='Path to save analysis results')
