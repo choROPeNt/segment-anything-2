@@ -12,9 +12,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1" # quite nice life hack
 import numpy as np
 
 import torch
-# Force new TF32 API settings
-torch.backends.cuda.matmul.fp32_precision = "tf32"
-torch.backends.cudnn.conv.fp32_precision = "tf32"
+
 
 import warnings
 warnings.filterwarnings(
