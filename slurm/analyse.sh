@@ -13,7 +13,7 @@
 #SBATCH --mem-per-cpu=12G                             # memory per CPU core
 #SBATCH --gres=gpu:1                                    # number of gpus
 #SBATCH -J "SAM2"                           # job name
-#SBATCH --output=slurm_out/SAM2-%j.out
+#SBATCH --output=out/SAM2-%j.out
 #SBATCH --mail-user=christian.duereth@tu-dresden.de     # email address
 #SBATCH --mail-type=BEGIN,END,FAIL,REQUEUE,TIME_LIMIT,TIME_LIMIT_90
 #SBATCH -A p_biiax
@@ -21,12 +21,15 @@
 ##################################################################
 
 
-
-
-
-
-
+# load the modules
 ml release/24.10 GCC/13.3.0 Python/3.12.3 CUDA/12.8.0
+
+nvidia-smi
+
+
+# Activate virtual enviroment
+source .venv_c/bin/activate
+
 
 DIRLIST=(
     "/data/horse/ws/dchristi-3dseg/data/micro/160/00_series/00"
