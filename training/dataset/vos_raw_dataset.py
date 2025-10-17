@@ -184,6 +184,9 @@ class SA1BRawDataset(VOSRawDataset):
             video_name for video_name in subset if video_name not in excluded_files
         ]
 
+        print("#"*20)
+        print(self.video_names)
+        print("#"*20)
     def get_video(self, idx):
         """
         Given a VOSVideo object, return the mask tensors.
