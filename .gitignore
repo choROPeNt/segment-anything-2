@@ -22,3 +22,6 @@ notebooks/results
 
 results/
 data/
+#log files folders
+slurm_out/
+out/
