@@ -233,8 +233,8 @@ def main(args,
 
     mask_generator = SAM2AutomaticMaskGenerator(
             model=sam2,
-            points_per_side=24, # correspond to 16**2 = 256 detection points which is similar to fibers per patch
-            points_per_batch=64, # Sets the number of points run simultaneously by the model. Higher numbers may be faster but use more GPU memory
+            points_per_side=48, # correspond to 16**2 = 256 detection points which is similar to fibers per patch
+            points_per_batch=96, # Sets the number of points run simultaneously by the model. Higher numbers may be faster but use more GPU memory
             pred_iou_thresh=0.1,
             min_mask_region_area=150,
             box_nms_thresh=0.1,
