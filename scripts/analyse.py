@@ -226,7 +226,7 @@ def main(args,
     #------------------------
     device = select_device()
 
-    sam2_checkpoint = "/data/horse/ws/dchristi-3dseg/SAM_training/01/checkpoints/checkpoint.pt"
+    sam2_checkpoint = "checkpoints/sam2.1_hiera_tiny.pt"
     model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=True)
