@@ -226,15 +226,15 @@ def main(args,
     #------------------------
     device = select_device()
 
-    sam2_checkpoint = "./checkpoints/sam2.1_hiera_tiny.pt"
+    sam2_checkpoint = "/data/horse/ws/dchristi-3dseg/SAM_training/01/checkpoints/checkpoint.pt"
     model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=True)
 
     mask_generator = SAM2AutomaticMaskGenerator(
             model=sam2,
-            points_per_side=24, # correspond to 16**2 = 256 detection points which is similar to fibers per patch
-            points_per_batch=64, # Sets the number of points run simultaneously by the model. Higher numbers may be faster but use more GPU memory
+            points_per_side=48, # correspond to 16**2 = 256 detection points which is similar to fibers per patch
+            points_per_batch=96, # Sets the number of points run simultaneously by the model. Higher numbers may be faster but use more GPU memory
             pred_iou_thresh=0.1,
             min_mask_region_area=150,
             box_nms_thresh=0.1,

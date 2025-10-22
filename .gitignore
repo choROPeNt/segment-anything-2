@@ -3,6 +3,7 @@
 __pycache__/
 *-checkpoint.ipynb
 .venv
+.venv_c
 *.egg*
 build/*
 _C.*
@@ -21,3 +22,6 @@ notebooks/results
 
 results/
 data/
+#log files folders
+slurm_out/
+out/
