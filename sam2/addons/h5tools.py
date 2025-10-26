@@ -22,6 +22,7 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
         "image": np.ndarray [H, W] or [H, W, C],
         "labels": np.ndarray [H, W],
         "mask": np.ndarray [H, W],
+        "binary": np.ndarray [H, W],
         "instances": [
             {
                 "id": int,
@@ -47,7 +48,7 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
 
     with h5py.File(path, "w") as h5f:
         # --- scalar / array datasets ---
-        for key in ["image", "labels", "mask"]:
+        for key in ["image", "labels", "mask", "binary"]:
             if key not in dict_out:
                 continue
             data = np.asarray(dict_out[key])
