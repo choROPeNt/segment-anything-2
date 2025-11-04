@@ -88,3 +88,64 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
         print(f"  ├─ labels shape  : {dict_out['labels'].shape if 'labels' in dict_out else None}")
         print(f"  ├─ mask shape    : {dict_out['mask'].shape if 'mask' in dict_out else None}")
         print(f"  └─ instances     : {n_inst}")
+
+
+
+def read_h5(path: str) -> dict:
+    """
+    Read image/label/mask/instance data from an HDF5 file 
+    created with `write_h5`.
+
+    Returns
+    -------
+    dict
+        {
+            "image": np.ndarray [H, W] or [H, W, C],
+            "labels": np.ndarray [H, W],
+            "mask": np.ndarray [H, W],
+            "binary": np.ndarray [H, W],
+            "instances": [
+                {
+                    "id": int,
+                    "area": float,
+                    "bbox": [x0, y0, w, h],
+                    "segmentation_crop": np.ndarray (bool)
+                },
+                ...
+            ]
+        }
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"HDF5 file not found: {path}")
+
+    out = {}
+    with h5py.File(path, "r") as h5f:
+        # --- load standard datasets ---
+        for key in ["image", "labels", "mask", "binary"]:
+            if key in h5f:
+                out[key] = np.array(h5f[key])
+
+        # --- load instances ---
+        if "instances" in h5f:
+            instances = []
+            grp_inst = h5f["instances"]
+            for inst_id in grp_inst:
+                g = grp_inst[inst_id]
+                inst = {
+                    "id": int(np.array(g["id"])),
+                    "area": float(np.array(g["area"])),
+                    "bbox": np.array(g["bbox"], dtype=int).tolist(),
+                    "segmentation_crop": np.array(g["segmentation_crop"], dtype=bool)
+                }
+                instances.append(inst)
+            out["instances"] = instances
+
+    # --- summary ---
+    n_inst = len(out.get("instances", []))
+    print(f"📂 Loaded: {path}")
+    print(f"  ├─ image shape   : {out['image'].shape if 'image' in out else None}")
+    print(f"  ├─ labels shape  : {out['labels'].shape if 'labels' in out else None}")
+    print(f"  ├─ mask shape    : {out['mask'].shape if 'mask' in out else None}")
+    print(f"  └─ instances     : {n_inst}")
+
+    return out
