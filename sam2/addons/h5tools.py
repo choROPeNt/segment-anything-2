@@ -86,6 +86,7 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
         print(f"✅ Saved: {path}")
         print(f"  ├─ image shape   : {dict_out['image'].shape if 'image' in dict_out else None}")
         print(f"  ├─ labels shape  : {dict_out['labels'].shape if 'labels' in dict_out else None}")
+        print(f"  ├─ binary shape  : {dict_out['binary'].shape if 'binary' in dict_out else None}")
         print(f"  ├─ mask shape    : {dict_out['mask'].shape if 'mask' in dict_out else None}")
         print(f"  └─ instances     : {n_inst}")
 
@@ -145,6 +146,7 @@ def read_h5(path: str) -> dict:
     print(f"📂 Loaded: {path}")
     print(f"  ├─ image shape   : {out['image'].shape if 'image' in out else None}")
     print(f"  ├─ labels shape  : {out['labels'].shape if 'labels' in out else None}")
+    print(f"  ├─ binary shape  : {out['binary'].shape if 'binary' in out else None}")
     print(f"  ├─ mask shape    : {out['mask'].shape if 'mask' in out else None}")
     print(f"  └─ instances     : {n_inst}")
 
