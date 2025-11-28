@@ -122,7 +122,7 @@ def overlay_from_instances(
 
 
 
-def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
+def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5,cmap_key="plasma"):
     """
     Draws annotations on an RGBA canvas.
     
@@ -162,7 +162,7 @@ def show_anns(anns, borders=True, canvas_shape=None,alpha=0.5):
     img = np.ones((H, W, 4), dtype=float)
     img[..., 3] = 0.0  # transparent background
 
-    cmap = colormaps.get_cmap("plasma")
+    cmap = colormaps.get_cmap(cmap_key)
     num_colors = len(sorted_anns)
     color_indices = np.random.rand(num_colors)
 
