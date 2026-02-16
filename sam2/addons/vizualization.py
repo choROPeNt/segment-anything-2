@@ -5,7 +5,7 @@ from matplotlib import colormaps
 import cv2
 
 
-np.random.seed(3)
+np.random.seed(67)
 
 
 def overlay_from_instances(
