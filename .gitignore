@@ -31,6 +31,9 @@ data
 results
 checkpoints
 
+
+
+
 #log files folders
 slurm_out/
 out/
