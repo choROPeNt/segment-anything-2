@@ -33,23 +33,38 @@ class Sam2Patcher:
     merge_iou: float = 0.5
 
     # ----------------------------- public API ---------------------------------
-
-    def tile_numpy(self, img: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int, int]]:
+    def tile_numpy(
+        self,
+        img: np.ndarray
+    ) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, ...]]:
         """
-        Split an (H, W, 3) image into overlapping patches. Patches at the right/bottom
-        edge automatically fall back to the minimum available size (no padding).
+        Split an image into overlapping patches. Supports:
+
+        - grayscale: (H, W)
+        - RGB:       (H, W, 3)
+
+        Patches at the right/bottom edge automatically fall back to the minimum
+        available size (no padding).
 
         Returns
         -------
         patches : list[np.ndarray]
-            List of patches; each has shape (h_i, w_i, 3), where h_i<=patch_h and w_i<=patch_w.
-        offsets : list[tuple[int,int]]
-            Top-left (y0, x0) offsets of each patch in ORIGINAL image coordinates.
-        canvas_shape : tuple[int,int,int]
-            The original image shape (H, W, 3); useful for stitching later.
+            List of patches; each has shape:
+            - (h_i, w_i) for grayscale
+            - (h_i, w_i, 3) for RGB
+        offsets : list[tuple[int, int]]
+            Top-left (y0, x0) offsets of each patch in original image coordinates.
+        canvas_shape : tuple[int, ...]
+            Original image shape; useful for stitching later.
         """
-        assert img.ndim == 3 and img.shape[-1] == 3, "Expected (H, W, 3) image"
-        H, W, _ = img.shape
+        if img.ndim == 2:
+            H, W = img.shape
+            is_rgb = False
+        elif img.ndim == 3 and img.shape[-1] == 3:
+            H, W, _ = img.shape
+            is_rgb = True
+        else:
+            raise ValueError("Expected image of shape (H, W) or (H, W, 3)")
 
         ys = self._positions(H, self.patch_h, self.overlap_h)
         xs = self._positions(W, self.patch_w, self.overlap_w)
@@ -61,8 +76,12 @@ class Sam2Patcher:
             for x0 in xs:
                 y1 = min(y0 + self.patch_h, H)
                 x1 = min(x0 + self.patch_w, W)
-                # copy() so downstream transforms don’t mutate the original backing memory
-                patch = img[y0:y1, x0:x1, :].copy()
+
+                if is_rgb:
+                    patch = img[y0:y1, x0:x1, :].copy()
+                else:
+                    patch = img[y0:y1, x0:x1].copy()
+
                 patches.append(patch)
                 offsets.append((y0, x0))
 
