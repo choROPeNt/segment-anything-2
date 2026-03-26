@@ -21,7 +21,7 @@ notebooks/images
 notebooks/results
 notebooks/AMHaWer
 notebooks/Veit
-
+notebooks/promotion
 notebooks/archiv
 
 
@@ -37,4 +37,4 @@ checkpoints
 
 #log files folders
 slurm_out/
-out/notebooks/promotion_
+
