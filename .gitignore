@@ -37,4 +37,4 @@ checkpoints
 
 #log files folders
 slurm_out/
-out/
+out/notebooks/promotion
