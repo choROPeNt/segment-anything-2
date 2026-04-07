@@ -5,18 +5,18 @@ scratch:
   train_batch_size: 1
   num_train_workers: 6
   num_frames: 1
-  max_num_objects: 70
-  base_lr: 5.0e-6
-  vision_lr: 3.0e-06
+  max_num_objects: 5
+  base_lr: 5.0e-5
+  vision_lr: 1.0e-06
   phases_per_epoch: 1
-  num_epochs: 40
+  num_epochs: 20
 
 dataset:
   # PATHS to Dataset
-  img_folder: /data/horse/ws/dchristi-3dseg/SAM2_dataset/ds1/images # PATH to MOSE JPEGImages folder
-  gt_folder: /data/horse/ws/dchristi-3dseg/SAM2_dataset/ds1/annotations  # PATH to MOSE Annotations folder
+  img_folder: /data/horse/ws/dchristi-segement-anything-2/data/ds1/images # PATH to MOSE JPEGImages folder
+  gt_folder: /data/horse/ws/dchristi-segement-anything-2/data/ds1/annotations # PATH to MOSE Annotations folder
   # file_list_txt: training/assets/my_train_list.txt # Optional PATH to filelist containing a subset of videos to be used for training
-  multiplier: 2
+  multiplier: 1
 
 # Video transforms
 transforms:
@@ -25,11 +25,10 @@ transforms:
       transforms:
         - _target_: training.dataset.transforms.RandomHorizontalFlip
           consistent_transform: True
-        # - _target_: training.dataset.transforms.RandomAffine
-        #   degrees: 25
-        #   shear: 20
-        #   image_interpolation: bilinear
-        #   consistent_transform: True
+        - _target_: training.dataset.transforms.RandomCropAroundObject
+          crop_size: 512      # zoom into 512px region containing the object
+          jitter: 40          # ±40px so it's not perfectly centered
+          consistent_transform: True
         - _target_: training.dataset.transforms.RandomResizeAPI
           sizes: ${scratch.resolution}
           square: true
@@ -56,7 +55,7 @@ transforms:
 
 trainer:
   _target_: training.trainer.Trainer
-  mode: train_only
+  mode: train
   max_epochs: ${times:${scratch.num_epochs},${scratch.phases_per_epoch}}
   accelerator: cuda
   seed_value: 123
@@ -231,7 +230,7 @@ trainer:
     param_group_modifiers:
       - _target_: training.optimizer.layer_decay_param_modifier
         _partial_: True
-        layer_decay_value: 0.9
+        layer_decay_value: 0.75
         apply_to: 'image_encoder.trunk'
         overrides:
           - pattern: '*pos_embed*'
@@ -265,7 +264,7 @@ trainer:
       _target_: training.loss_fns.MultiStepMultiMasksAndIous
       weight_dict:
         loss_mask: 20
-        loss_dice: 1
+        loss_dice: 0.2
         loss_iou: 1
         loss_class: 1
       supervise_all_iou: true
@@ -277,6 +276,8 @@ trainer:
   distributed:
     backend: nccl
     find_unused_parameters: True
+    comms_dtype: bfloat16 
+
 
   logging:
     tensorboard_writer:
@@ -290,7 +291,7 @@ trainer:
   # initialize from a SAM 2 checkpoint
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
-    save_freq: 0 # 0 only last checkpoint is saved.
+    save_freq: 5 # 0 only last checkpoint is saved.
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model
@@ -306,7 +307,7 @@ trainer:
 launcher:
   num_nodes: 1
   gpus_per_node: 1
-  experiment_log_dir: /data/horse/ws/dchristi-segement-anything-2/SAM_training/01 # Path to log directory, defaults to ./sam2_logs/${config_name}
+  experiment_log_dir: /data/horse/ws/dchristi-segement-anything-2/training/10_glass # Path to log directory, defaults to ./sam2_logs/${config_name}
 
 # SLURM args if running on a cluster
 submitit:
