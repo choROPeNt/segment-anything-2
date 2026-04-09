@@ -1,3 +1,4 @@
+CLAUDE.md
 .vscode/
 .DS_Store
 __pycache__/
@@ -31,7 +32,7 @@ data/
 data
 results
 checkpoints
-
+training_checkpoints
 
 
 
