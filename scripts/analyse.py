@@ -1,42 +1,32 @@
 from __future__ import annotations
 
+import os
+import random
 import sys
-
-import warnings
-warnings.filterwarnings("ignore", message=".*MPS.*fallback.*")
-
-import os,random
 import argparse
-# if using Apple MPS, fall back to CPU for unsupported ops
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1" # quite nice life hack
-import numpy as np
-
-import torch
-
-
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    message=".*Please use the new API settings to control TF32 behavior.*",
-)
+from typing import cast, Tuple
+
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+warnings.filterwarnings("ignore", message=".*MPS.*fallback.*")
+warnings.filterwarnings("ignore", message=".*Please use the new API settings to control TF32 behavior.*")
+
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from PIL import Image
+from tqdm import tqdm
 
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from sam2.addons import (Sam2Patcher, 
+                         show_anns, 
+                         write_h5, 
+                         delete_h5_if_exists)
 
-import matplotlib.pyplot as plt
-from matplotlib import colormaps
-
-
-from PIL import Image
-import h5py
-from tqdm import tqdm
-
-
-from sam2.addons import Sam2Patcher
-from sam2.addons import show_anns, write_h5
-
-
-seed = 3
+seed = 67
 random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
 
@@ -49,7 +39,7 @@ def select_device():
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("matmul:", torch.backends.cuda.matmul.fp32_precision)
-        print("cudnn conv:", torch.backends.cudnn.conv.fp32_precision)
+        print("cudnn allow_tf32:", torch.backends.cudnn.allow_tf32)
 
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -72,6 +62,7 @@ def select_device():
             "\nSee e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
     )
     return device
+
 
 def load_image_from_path(file_path):
     """
@@ -146,7 +137,7 @@ def main(args,
     sam2_checkpoint = "checkpoints/sam2.1_hiera_tiny.pt"
     model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
-    sam2 = build_sam2(model_cfg, sam2_checkpoint, device=device, apply_postprocessing=True)
+    sam2 = build_sam2(model_cfg, sam2_checkpoint, device=str(device), apply_postprocessing=True)
 
     mask_generator = SAM2AutomaticMaskGenerator(
             model=sam2,
@@ -206,7 +197,7 @@ def main(args,
         
 
         label_map, instances = patcher.stitch_sam2_instances(
-            padded_shape_hw=padded_shape[:2],
+            padded_shape_hw=cast(Tuple[int, int], padded_shape[:2]),
             offsets=offsets,
             per_tile_sam2=all_detections,
             debug=False,
