@@ -2,7 +2,7 @@
 import numpy as np
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Any, Sequence
+from typing import List, Tuple, Dict, Set, Any, Sequence
 
 
 
@@ -97,138 +97,160 @@ class Sam2Patcher:
         debug: bool = False,
     ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
         """
-        Fast merge of per-tile SAM2 masks into a global instance map.
-        - No confidence map (keep-first policy)
-        - Compact uniques with return_counts (no giant bincount)
-        - searchsorted alignment (no Python dict)
+        Merge per-tile SAM2 masks into a global instance map.
+
+        Speedups over the naive approach:
+        - ``inst_area`` dict: O(1) lookup for existing region sizes, avoids
+          ``np.unique(im_sub.ravel())`` per mask.
+        - ``inst_bbox`` dict: tracks tight bounding boxes incrementally so the
+          final instance-list build only scans each instance's own bbox instead
+          of the full canvas (avoids O(N * H * W) ``np.where`` loop).
+        - Neighbour-only IoU: a patch grid maps (row, col) → written instance
+          IDs; each tile only considers IDs placed by its 4 direct neighbours
+          (top, left, top-left, top-right), avoiding spurious merges with
+          distant instances that happen to overlap the bbox.
         """
         H, W = padded_shape_hw
-        inst_map = np.zeros((H, W), dtype=np.uint32)  # lean dtype
-        next_id = np.uint32(1)
-        total_written = 0
+        inst_map = np.zeros((H, W), dtype=np.uint32)
+        next_id = 1
         merge_iou = float(self.merge_iou)
+
+        # incremental instance metadata: id → [gy0, gx0, gy1, gx1, area_written]
+        inst_area: Dict[int, int] = {}          # id → pixel count in inst_map
+        inst_bbox: Dict[int, List[int]] = {}    # id → [gy0, gx0, gy1, gx1]
+
+        # patch grid for neighbour lookup
+        ys_sorted = sorted(set(o[0] for o in offsets))
+        xs_sorted = sorted(set(o[1] for o in offsets))
+        ys_idx = {y: i for i, y in enumerate(ys_sorted)}
+        xs_idx = {x: i for i, x in enumerate(xs_sorted)}
+        # (row, col) → set of instance IDs placed by that tile
+        tile_ids: Dict[Tuple[int, int], Set[int]] = {}
 
         for (tile_y0, tile_x0), detections in zip(offsets, per_tile_sam2):
             if not detections:
                 continue
+
+            ri, ci = ys_idx[tile_y0], xs_idx[tile_x0]
+            tile_key = (ri, ci)
+            tile_ids[tile_key] = set()
+
+            # IDs written by the 4 spatially adjacent tiles that were already processed
+            neighbour_ids: Set[int] = set()
+            for dr, dc in ((-1, 0), (0, -1), (-1, -1), (-1, 1)):
+                nk = (ri + dr, ci + dc)
+                if nk in tile_ids:
+                    neighbour_ids.update(tile_ids[nk])
 
             for d in detections:
                 m = np.asarray(d["segmentation"], dtype=bool, order="C")
                 if not m.any():
                     continue
 
-                # bbox in patch coords [x, y, w, h]
                 bx, by, bw, bh = d.get("bbox", [0, 0, m.shape[1], m.shape[0]])
                 if bw <= 0 or bh <= 0:
-                    # cheap bbox from mask
-                    ys = np.flatnonzero(m.any(axis=1))
-                    if ys.size == 0:
+                    ys_m = np.flatnonzero(m.any(axis=1))
+                    if ys_m.size == 0:
                         continue
-                    xs = np.flatnonzero(m.any(axis=0))
-                    by, bx = int(ys[0]), int(xs[0])
-                    bh = int(ys[-1] - ys[0] + 1)
-                    bw = int(xs[-1] - xs[0] + 1)
+                    xs_m = np.flatnonzero(m.any(axis=0))
+                    by, bx = int(ys_m[0]), int(xs_m[0])
+                    bh = int(ys_m[-1] - ys_m[0] + 1)
+                    bw = int(xs_m[-1] - xs_m[0] + 1)
 
-                by0 = int(by); bx0 = int(bx)
-                by1 = by0 + int(bh); bx1 = bx0 + int(bw)
+                by0, bx0 = int(by), int(bx)
+                by1, bx1 = by0 + int(bh), bx0 + int(bw)
 
-                # global coords (exclusive high)
-                gy0 = tile_y0 + by0; gx0 = tile_x0 + bx0
-                gy1 = tile_y0 + by1; gx1 = tile_x0 + bx1
+                gy0 = max(tile_y0 + by0, 0); gx0 = max(tile_x0 + bx0, 0)
+                gy1 = min(tile_y0 + by1, H); gx1 = min(tile_x0 + bx1, W)
 
-                # clamp to canvas
-                if gy0 < 0: gy0 = 0
-                if gx0 < 0: gx0 = 0
-                if gy1 > H: gy1 = H
-                if gx1 > W: gx1 = W
                 if gy0 >= gy1 or gx0 >= gx1:
                     continue
 
-                # crop tile mask to bbox (tile-local)
                 m_sub = m[by0:by1, bx0:bx1]
                 if not m_sub.any():
                     continue
 
-                # quick skip: tiny masks → just assign new id (saves IoU work)
-                area_m_int = int(m_sub.sum())
-                if area_m_int < 8:
-                    tgt = next_id
-                    next_id += 1
-                    im_sub = inst_map[gy0:gy1, gx0:gx1]
-                    write = m_sub & (im_sub == 0)
-                    if write.any():
-                        im_sub[write] = tgt
-                        total_written += int(write.sum())
-                    continue
-
+                area_m = int(m_sub.sum())
                 im_sub = inst_map[gy0:gy1, gx0:gx1]
 
-                # ---- Compact overlaps (no huge minlength) ----
-                # intersection labels (only where mask is True)
-                labels_inter = im_sub[m_sub].ravel()
-                if labels_inter.size == 0:
-                    overlapping_oids = np.array([], dtype=np.uint32)
-                    inter_counts = np.array([], dtype=np.int32)
-                else:
-                    u_inter, inter_counts = np.unique(labels_inter, return_counts=True)
-                    # drop background 0
-                    nz = (u_inter != 0)
-                    overlapping_oids = u_inter[nz].astype(np.uint32, copy=False)
-                    inter_counts = inter_counts[nz].astype(np.int32, copy=False)
+                # tiny masks: skip IoU, just assign new id
+                if area_m < 8:
+                    tgt = next_id; next_id += 1
+                    write = m_sub & (im_sub == 0)
+                    if write.any():
+                        n = int(write.sum())
+                        im_sub[write] = np.uint32(tgt)
+                        inst_area[tgt] = n
+                        inst_bbox[tgt] = [gy0, gx0, gy1, gx1]
+                        tile_ids[tile_key].add(tgt)
+                    continue
 
+                # ---- IoU against neighbour instances only ----
+                labels_inter = im_sub[m_sub].ravel()
                 best_iou = 0.0
                 tgt = None
 
-                if overlapping_oids.size:
-                    # region label counts anywhere in bbox
-                    u_reg, reg_counts = np.unique(im_sub.ravel(), return_counts=True)
-                    # u_reg is sorted; map overlapping_oids -> indices via searchsorted
-                    idx = np.searchsorted(u_reg, overlapping_oids)
-                    # Safety: overlapping_oids are subset of u_reg
-                    reg_area = reg_counts[idx].astype(np.float32, copy=False)
+                if labels_inter.size:
+                    u_inter, inter_counts = np.unique(labels_inter, return_counts=True)
+                    nz = u_inter != 0
+                    if nz.any():
+                        oids = u_inter[nz]
+                        cnts = inter_counts[nz].astype(np.float32)
+                        # restrict to neighbours (or same tile if merging within tile)
+                        valid = np.fromiter(
+                            (int(o) in neighbour_ids or int(o) in tile_ids[tile_key]
+                             for o in oids),
+                            dtype=bool, count=len(oids)
+                        )
+                        if valid.any():
+                            oids = oids[valid]; cnts = cnts[valid]
+                            reg_areas = np.fromiter(
+                                (inst_area.get(int(o), 1) for o in oids),
+                                dtype=np.float32, count=len(oids)
+                            )
+                            denom = area_m + reg_areas - cnts
+                            denom[denom == 0.0] = 1.0
+                            ious = cnts / denom
+                            j = int(ious.argmax())
+                            best_iou = float(ious[j])
+                            tgt = int(oids[j])
 
-                    inter = inter_counts.astype(np.float32, copy=False)
-                    area_m = float(area_m_int)
-                    denom = (area_m + reg_area - inter)
-                    denom[denom == 0.0] = 1.0
-                    ious = inter / denom
-
-                    j = int(ious.argmax())
-                    best_iou = float(ious[j])
-                    tgt = int(overlapping_oids[j])
-
-                # assign new id if no good match
                 if tgt is None or best_iou < merge_iou:
-                    tgt = int(next_id)
-                    next_id += 1
+                    tgt = next_id; next_id += 1
 
-                # keep-first write rule (no conf map)
                 write = m_sub & (im_sub == 0)
                 if write.any():
+                    n = int(write.sum())
                     im_sub[write] = np.uint32(tgt)
-                    total_written += int(write.sum())
+                    if tgt in inst_bbox:
+                        bb = inst_bbox[tgt]
+                        bb[0] = min(bb[0], gy0); bb[1] = min(bb[1], gx0)
+                        bb[2] = max(bb[2], gy1); bb[3] = max(bb[3], gx1)
+                        inst_area[tgt] += n
+                    else:
+                        inst_bbox[tgt] = [gy0, gx0, gy1, gx1]
+                        inst_area[tgt] = n
+                    tile_ids[tile_key].add(tgt)
 
         if debug:
-            print(f"[stitch] written_px={total_written}, instances={int(inst_map.max())}")
+            print(f"[stitch] instances={len(inst_bbox)}, unique_ids={int(inst_map.max())}")
 
-        # Build instances list efficiently (optional)
+        # ---- Build instance list using tracked bboxes (avoids O(N*H*W) scan) ----
         instances: List[Dict[str, Any]] = []
-        ids = np.unique(inst_map)
-        ids = ids[ids != 0]
-        for oid in ids.tolist():
-            ys, xs = np.where(inst_map == oid)
-            if ys.size == 0:
+        for oid, (gy0, gx0, gy1, gx1) in inst_bbox.items():
+            crop = inst_map[gy0:gy1, gx0:gx1] == oid
+            ys_c, xs_c = np.where(crop)
+            if ys_c.size == 0:
                 continue
-            ymin, ymax = int(ys.min()), int(ys.max())
-            xmin, xmax = int(xs.min()), int(xs.max())
-
-            seg_crop = (inst_map[ymin:ymax + 1, xmin:xmax + 1] == oid)
-
+            # tight bbox within the tracked window
+            rgy0 = gy0 + int(ys_c.min()); rgx0 = gx0 + int(xs_c.min())
+            rgy1 = gy0 + int(ys_c.max()) + 1; rgx1 = gx0 + int(xs_c.max()) + 1
+            seg_crop = (inst_map[rgy0:rgy1, rgx0:rgx1] == oid)
             instances.append({
                 "id": int(oid),
-                "area": int(ys.size),
-                "segmentation_crop": seg_crop.astype(bool),
-                "bbox": [xmin, ymin, xmax - xmin + 1, ymax - ymin + 1],  # xywh exclusive
+                "area": int(ys_c.size),
+                "segmentation_crop": seg_crop,
+                "bbox": [rgx0, rgy0, rgx1 - rgx0, rgy1 - rgy0],
             })
 
         return inst_map, instances

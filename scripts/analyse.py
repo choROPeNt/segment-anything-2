@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import random
 import sys
@@ -17,6 +18,7 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # suppress DecompressionBombWarning for large microscopy images
 from tqdm import tqdm
 
 from sam2.build_sam import build_sam2
@@ -30,17 +32,59 @@ seed = 67
 random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
 
+ # move results fully off GPU just in case
+def to_cpu(obj):
+    if torch.is_tensor(obj):
+        return obj.detach().cpu()
+    elif isinstance(obj, dict):
+        return {k: to_cpu(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [to_cpu(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(to_cpu(v) for v in obj)
+    return obj
+
+
+def make_mask_generator(sam2):
+    return SAM2AutomaticMaskGenerator(
+        model=sam2,
+        points_per_side=96,
+        points_per_batch=128,          # lower than 96 to reduce peak memory
+        pred_iou_thresh=0.1,
+        min_mask_region_area=150,
+        box_nms_thresh=0.1,
+        stability_score_thresh=0.9,
+        # multimask_output=False,       # important
+        # output_mode="uncompressed_rle"  # important
+    )
+
+def find_cuda_tensors(obj, path="root", found=None):
+    if found is None:
+        found = []
+    import torch
+
+    if torch.is_tensor(obj):
+        if obj.is_cuda:
+            found.append((path, tuple(obj.shape), obj.dtype, obj.device))
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            find_cuda_tensors(v, f"{path}[{k!r}]", found)
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            find_cuda_tensors(v, f"{path}[{i}]", found)
+    return found
+
+
+
 def select_device():
     """
-    short function to select the device for computation (CUDA/CPU/MPS)
-    returns the selected torch device
+    Select computation device (CUDA / MPS / CPU)
+    and apply safe backend settings.
+    Returns:
+        torch.device
     """
-    # select the device for computation
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print("matmul:", torch.backends.cuda.matmul.fp32_precision)
-        print("cudnn allow_tf32:", torch.backends.cudnn.allow_tf32)
-
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
@@ -49,20 +93,24 @@ def select_device():
     print(f"using device: {device}")
 
     if device.type == "cuda":
-        # use bfloat16 for the entire notebook
-        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-        # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
-        if torch.cuda.get_device_properties(0).major >= 8:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+        # Optional: enable TF32 where supported, but only if the attributes exist
+        try:
+            if torch.cuda.get_device_properties(0).major >= 8:
+                if hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                if hasattr(torch.backends.cudnn, "allow_tf32"):
+                    torch.backends.cudnn.allow_tf32 = True
+        except Exception as e:
+            print(f"Warning: could not set TF32 flags: {e}")
+
     elif device.type == "mps":
         print(
             "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
             "\ngive numerically different outputs and sometimes degraded performance on MPS. "
             "\nSee e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
-    )
-    return device
+        )
 
+    return device
 
 def load_image_from_path(file_path):
     """
@@ -139,22 +187,14 @@ def main(args,
 
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device=str(device), apply_postprocessing=True)
 
-    mask_generator = SAM2AutomaticMaskGenerator(
-            model=sam2,
-            points_per_side=48, # correspond to 16**2 = 256 detection points which is similar to fibers per patch
-            points_per_batch=96, # Sets the number of points run simultaneously by the model. Higher numbers may be faster but use more GPU memory
-            pred_iou_thresh=0.1,
-            min_mask_region_area=150,
-            box_nms_thresh=0.1,
-            stability_score_thresh=0.95,  # Reduce the stability threshold to keep more masks
-    )
+
     
     ## intialize tiler 
     patcher = Sam2Patcher(
-        patch_h=1024, 
-        patch_w=1024, 
-        overlap_h=256, 
-        overlap_w=256, 
+        patch_h=512, 
+        patch_w=512, 
+        overlap_h=64, 
+        overlap_w=64, 
         pad_mode="constant",
         merge_iou=0.1
     )
@@ -167,6 +207,7 @@ def main(args,
         print(f"Processing file {i+1}/{len(files)}: {file}")
         image, was_grayscale  = load_image_from_path(file_path)
 
+        # image = image[:,:2048]
         ## Patching
         patches, offsets, padded_shape = patcher.tile_numpy(image)
         print(f"Tiled into {len(patches)} patches of shape {patches[0].shape}, \
@@ -176,25 +217,37 @@ def main(args,
         h5_path = os.path.join(output_path,f"{file_name}.patches.result.h5")
 
         delete_h5_if_exists(h5_path)
-
-        #----- Mask Generation -----
         all_detections = []
-        for p in tqdm(patches,
-            total=len(patches),
-            desc="Mask generation",
-            unit="patch"
-        ):
-            ## detect masks per patch
-            detections = mask_generator.generate(p)
-            ## gather results
+
+        mask_generator = make_mask_generator(sam2)
+
+        for patch_idx, p in enumerate(tqdm(patches, total=len(patches), desc="Mask generation", unit="patch")):
+
+            if device.type == "cuda":
+                with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    detections = mask_generator.generate(p)
+            else:
+                with torch.inference_mode():
+                    detections = mask_generator.generate(p)
+
+            mask_generator.predictor.reset_predictor()
+
+            # move everything off GPU just in case
+            detections = to_cpu(detections)
+
             if args.max_area:
-                max_area = args.max_area
-                filterd = [d for d in detections if d["area"] < max_area]
-                all_detections.append(filterd)
+                filtered = [d for d in detections if d["area"] < args.max_area]
+                all_detections.append(filtered)
             else:
                 all_detections.append(detections)
 
-        
+            del detections
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+    
+        print(cast(Tuple[int, int], padded_shape[:2]))
 
         label_map, instances = patcher.stitch_sam2_instances(
             padded_shape_hw=cast(Tuple[int, int], padded_shape[:2]),
