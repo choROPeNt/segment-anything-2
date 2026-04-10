@@ -63,6 +63,7 @@ def select_device():
     )
     return device
 
+
 def load_image_from_path(file_path):
     """
     Load multiple images (grayscale or RGB) into NumPy arrays.
