@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Union, Dict, Any, Tuple
-from aicsimageio import AICSImage
+from aicsimageio.aics_image import AICSImage
 from aicsimageio.readers import BioformatsReader
 import numpy as np
 
