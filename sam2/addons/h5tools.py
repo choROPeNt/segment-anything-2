@@ -122,22 +122,30 @@ def read_h5(path: str) -> dict:
     out = {}
     with h5py.File(path, "r") as h5f:
         # --- load standard datasets ---
-        for key in ["image", "labels", "mask", "binary"]:
+        for key in ["image", "labels", "mask", "binary", "label_map"]:
             if key in h5f:
-                out[key] = np.array(h5f[key])
+                if key == "label_map":
+                    out["labels"] = np.array(h5f[key])
+                else:
+                    out[key] = np.array(h5f[key])
 
         # --- load instances ---
         if "instances" in h5f:
             instances = []
             grp_inst = h5f["instances"]
+            assert isinstance(grp_inst, h5py.Group)
             for inst_id in grp_inst:
                 g = grp_inst[inst_id]
-                inst = {
-                    "id": int(np.array(g["id"])),
-                    "area": float(np.array(g["area"])),
-                    "bbox": np.array(g["bbox"], dtype=int).tolist(),
-                    "segmentation_crop": np.array(g["segmentation_crop"], dtype=bool)
-                }
+                if not isinstance(g, h5py.Group):
+                    continue
+                inst: dict = {}
+                inst["id"]   = int(np.asarray(g.attrs["id"]).item())     if "id"   in g.attrs else int(str(inst_id))
+                inst["area"] = float(np.asarray(g.attrs["area"]).item()) if "area" in g.attrs else (
+                               float(np.array(g["area"]).item())         if "area" in g else None)
+                inst["bbox"] = (np.array(g["bbox"], dtype=int).tolist()
+                                if "bbox" in g else None)
+                inst["segmentation_crop"] = (np.array(g["segmentation_crop"], dtype=bool)
+                                             if "segmentation_crop" in g else None)
                 instances.append(inst)
             out["instances"] = instances
 
