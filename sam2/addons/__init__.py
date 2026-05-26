@@ -4,6 +4,7 @@ from .h5tools import write_h5, read_h5, delete_h5_if_exists
 from .descriptors import (
     s2_descriptor,
     phi_descriptor,
+    onehot_from_labelmap,
     rve_size_from_integral_range,
     integral_range_from_S2r,
     corr_length_halfheight,
@@ -23,6 +24,7 @@ __all__ = [
     # descriptors
     "s2_descriptor",
     "phi_descriptor",
+    "onehot_from_labelmap",
     "rve_size_from_integral_range",
     "integral_range_from_S2r",
     "corr_length_halfheight",
