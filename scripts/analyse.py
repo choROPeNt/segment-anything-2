@@ -32,24 +32,14 @@ seed = 67
 random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
 
- # move results fully off GPU just in case
-def to_cpu(obj):
-    if torch.is_tensor(obj):
-        return obj.detach().cpu()
-    elif isinstance(obj, dict):
-        return {k: to_cpu(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [to_cpu(v) for v in obj]
-    elif isinstance(obj, tuple):
-        return tuple(to_cpu(v) for v in obj)
-    return obj
+
 
 
 def make_mask_generator(sam2):
     return SAM2AutomaticMaskGenerator(
         model=sam2,
-        points_per_side=96,
-        points_per_batch=128,          # lower than 96 to reduce peak memory
+        points_per_side=48,
+        points_per_batch=164,          # lower than 96 to reduce peak memory
         pred_iou_thresh=0.1,
         min_mask_region_area=150,
         box_nms_thresh=0.1,
@@ -58,21 +48,7 @@ def make_mask_generator(sam2):
         # output_mode="uncompressed_rle"  # important
     )
 
-def find_cuda_tensors(obj, path="root", found=None):
-    if found is None:
-        found = []
-    import torch
 
-    if torch.is_tensor(obj):
-        if obj.is_cuda:
-            found.append((path, tuple(obj.shape), obj.dtype, obj.device))
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            find_cuda_tensors(v, f"{path}[{k!r}]", found)
-    elif isinstance(obj, (list, tuple)):
-        for i, v in enumerate(obj):
-            find_cuda_tensors(v, f"{path}[{i}]", found)
-    return found
 
 
 
@@ -232,14 +208,13 @@ def main(args,
 
             mask_generator.predictor.reset_predictor()
 
-            # move everything off GPU just in case
-            detections = to_cpu(detections)
 
-            if args.max_area:
-                filtered = [d for d in detections if d["area"] < args.max_area]
-                all_detections.append(filtered)
-            else:
-                all_detections.append(detections)
+            filtered = [
+                d for d in detections
+                if (args.min_area is None or d["area"] >= args.min_area)
+                and (args.max_area is None or d["area"] < args.max_area)
+            ]
+            all_detections.append(filtered)
 
             del detections
             gc.collect()
@@ -299,11 +274,19 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        '--min_area',
+        type=float,
+        required=False,
+        default=None,
+        help='Optional minimum area threshold; detections with area < min_area are excluded.'
+    )
+
+    parser.add_argument(
         '--max_area',
         type=float,
         required=False,
         default=None,
-        help='Optional area threshold for filtering small or large regions. Use None to disable filtering.'
+        help='Optional maximum area threshold; detections with area >= max_area are excluded.'
     )
 
     parser.add_argument(
