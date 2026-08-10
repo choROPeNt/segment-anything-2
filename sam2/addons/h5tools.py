@@ -13,33 +13,47 @@ def delete_h5_if_exists(h5_path: str) -> None:
     else:
         print(f"No existing HDF5 at {h5_path} — nothing to delete.")
 
+def _write_h5_item(parent: h5py.Group, key: str, value) -> None:
+    """Recursively write a value into an h5py group under the given key.
+
+    - list of dicts → group of zero-padded sub-groups (keyed by "id" if present)
+    - dict          → nested group
+    - array/scalar  → dataset (gzip-compressed when ndim >= 2)
+    """
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        grp = parent.create_group(key)
+        for i, record in enumerate(value):
+            sub_key = str(record.get("id", i + 1)).zfill(4)
+            g = grp.create_group(sub_key)
+            for k, v in record.items():
+                _write_h5_item(g, k, v)
+    elif isinstance(value, dict):
+        grp = parent.create_group(key)
+        for k, v in value.items():
+            _write_h5_item(grp, k, v)
+    else:
+        arr = np.asarray(value)
+        if arr.ndim >= 2:
+            parent.create_dataset(key, data=arr, compression="gzip", compression_opts=4)
+        else:
+            parent.create_dataset(key, data=arr)
+
+
 def write_h5(path: str, dict_out: dict, overwrite: bool = True):
     """
-    Write image/label/mask/instance data to an HDF5 file.
+    Write any dict to an HDF5 file.
 
-    Expected structure:
-    {
-        "image": np.ndarray [H, W] or [H, W, C],
-        "labels": np.ndarray [H, W],
-        "mask": np.ndarray [H, W],
-        "binary": np.ndarray [H, W],
-        "instances": [
-            {
-                "id": int,
-                "area": float,
-                "bbox": [x0, y0, w, h],
-                "segmentation_cropped": np.ndarray (bool)
-            },
-            ...
-        ]
-    }
+    - numpy arrays / scalars → datasets (gzip-compressed when ndim >= 2)
+    - list of dicts → group of indexed sub-groups (keyed by zero-padded "id"
+      field if present, otherwise by position)
+    - nested dicts → nested groups
 
     Parameters
     ----------
     path : str
         Output HDF5 file path.
     dict_out : dict
-        Data dictionary as above.
+        Data to write.
     overwrite : bool
         If True, overwrites existing file.
     """
@@ -47,107 +61,96 @@ def write_h5(path: str, dict_out: dict, overwrite: bool = True):
         os.remove(path)
 
     with h5py.File(path, "w") as h5f:
-        # --- scalar / array datasets ---
-        for key in ["image", "labels", "mask", "binary"]:
-            if key not in dict_out:
-                continue
-            data = np.asarray(dict_out[key])
-            h5f.create_dataset(
-                key,
-                data=data,
-                compression="gzip",
-                compression_opts=4
-            )
+        for key, value in dict_out.items():
+            _write_h5_item(h5f, key, value)
 
-        # --- instances ---
-        if "instances" in dict_out and dict_out["instances"]:
-            grp_inst = h5f.create_group("instances")
-            for inst in dict_out["instances"]:
-                inst_id = str(inst.get("id", len(grp_inst) + 1)).zfill(4)
-                g = grp_inst.create_group(inst_id)
+    keys = sorted(dict_out)
+    print(f"✅ Saved: {path}")
+    for i, k in enumerate(keys):
+        prefix = "  └─" if i == len(keys) - 1 else "  ├─"
+        v = dict_out[k]
+        if isinstance(v, np.ndarray):
+            info = str(v.shape)
+        elif isinstance(v, list):
+            info = f"{len(v)} items"
+        else:
+            arr = np.asarray(v)
+            info = str(arr.shape) if arr.ndim > 0 else repr(v)
+        print(f"{prefix} {k:<20}: {info}")
 
-                # Store metadata
-                g.create_dataset("id", data=np.int32(inst.get("id", -1)))
-                g.create_dataset("area", data=np.float32(inst.get("area", 0.0)))
 
-                bbox = np.asarray(inst.get("bbox", [0, 0, 0, 0]), dtype=np.int32)
-                g.create_dataset("bbox", data=bbox)
+def _h5_scalar_or_array(v):
+    arr = np.asarray(v)
+    return arr.item() if arr.ndim == 0 else arr
 
-                seg = np.asarray(inst.get("segmentation_crop", []), dtype=bool)
-                g.create_dataset(
-                    "segmentation_crop",
-                    data=seg,
-                    compression="gzip",
-                    compression_opts=4
-                )
 
-        # Summary
-        n_inst = len(dict_out.get("instances", []))
-        print(f"✅ Saved: {path}")
-        print(f"  ├─ image shape   : {dict_out['image'].shape if 'image' in dict_out else None}")
-        print(f"  ├─ labels shape  : {dict_out['labels'].shape if 'labels' in dict_out else None}")
-        print(f"  ├─ binary shape  : {dict_out['binary'].shape if 'binary' in dict_out else None}")
-        print(f"  ├─ mask shape    : {dict_out['mask'].shape if 'mask' in dict_out else None}")
-        print(f"  └─ instances     : {n_inst}")
+def _load_h5_item(item):
+    """Recursively load an h5py Dataset or Group into Python/numpy types.
 
+    Groups whose children are all sub-groups are returned as a list of dicts
+    (attrs take priority over same-named datasets within each sub-group).
+    All other groups are returned as nested dicts.
+    """
+    if isinstance(item, h5py.Dataset):
+        arr = np.array(item)
+        return arr.item() if arr.ndim == 0 else arr
+
+    children = list(item.keys())
+    if children and all(isinstance(item[k], h5py.Group) for k in children):
+        records = []
+        for k in sorted(children):
+            g = item[k]
+            rec = {a: _h5_scalar_or_array(v) for a, v in g.attrs.items()}
+            for ds in g:
+                if ds not in rec:
+                    rec[ds] = _load_h5_item(g[ds])
+            records.append(rec)
+        return records
+
+    result = {a: _h5_scalar_or_array(v) for a, v in item.attrs.items()}
+    for k in children:
+        if k not in result:
+            result[k] = _load_h5_item(item[k])
+    return result
 
 
 def read_h5(path: str) -> dict:
     """
-    Read image/label/mask/instance data from an HDF5 file 
-    created with `write_h5`.
+    Generically read all datasets and groups from an HDF5 file.
+
+    - Datasets → numpy arrays (0-d arrays unwrapped to Python scalars).
+    - Groups whose children are all sub-groups → list of dicts (attrs take
+      priority over same-named datasets within each record).
+    - Other groups → nested dicts.
+    - "label_map" is aliased to "labels" for backward compatibility.
 
     Returns
     -------
     dict
-        {
-            "image": np.ndarray [H, W] or [H, W, C],
-            "labels": np.ndarray [H, W],
-            "mask": np.ndarray [H, W],
-            "binary": np.ndarray [H, W],
-            "instances": [
-                {
-                    "id": int,
-                    "area": float,
-                    "bbox": [x0, y0, w, h],
-                    "segmentation_crop": np.ndarray (bool)
-                },
-                ...
-            ]
-        }
+        Keys mirror the HDF5 root structure.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"HDF5 file not found: {path}")
 
+    _ALIASES = {"label_map": "labels"}
+
     out = {}
     with h5py.File(path, "r") as h5f:
-        # --- load standard datasets ---
-        for key in ["image", "labels", "mask", "binary"]:
-            if key in h5f:
-                out[key] = np.array(h5f[key])
+        for key in h5f:
+            key = str(key)
+            out[_ALIASES.get(key, key)] = _load_h5_item(h5f[key])
 
-        # --- load instances ---
-        if "instances" in h5f:
-            instances = []
-            grp_inst = h5f["instances"]
-            for inst_id in grp_inst:
-                g = grp_inst[inst_id]
-                inst = {
-                    "id": int(np.array(g["id"])),
-                    "area": float(np.array(g["area"])),
-                    "bbox": np.array(g["bbox"], dtype=int).tolist(),
-                    "segmentation_crop": np.array(g["segmentation_crop"], dtype=bool)
-                }
-                instances.append(inst)
-            out["instances"] = instances
-
-    # --- summary ---
-    n_inst = len(out.get("instances", []))
+    keys = sorted(out)
     print(f"📂 Loaded: {path}")
-    print(f"  ├─ image shape   : {out['image'].shape if 'image' in out else None}")
-    print(f"  ├─ labels shape  : {out['labels'].shape if 'labels' in out else None}")
-    print(f"  ├─ binary shape  : {out['binary'].shape if 'binary' in out else None}")
-    print(f"  ├─ mask shape    : {out['mask'].shape if 'mask' in out else None}")
-    print(f"  └─ instances     : {n_inst}")
+    for i, k in enumerate(keys):
+        prefix = "  └─" if i == len(keys) - 1 else "  ├─"
+        v = out[k]
+        if isinstance(v, np.ndarray):
+            info = str(v.shape)
+        elif isinstance(v, list):
+            info = f"{len(v)} items"
+        else:
+            info = repr(v)
+        print(f"{prefix} {k:<20}: {info}")
 
     return out

@@ -1,81 +1,128 @@
 import torch
 
 
+def onehot_from_labelmap(
+    label: torch.Tensor,
+    n_classes: int | None = None,
+    ignore_index: int = 0,
+) -> torch.Tensor:
+    """
+    Convert an integer label map to one-hot binary channels.
+
+    Parameters
+    ----------
+    label : torch.Tensor
+        Shape ``[B, H, W]``, integer class ids.
+    n_classes : int, optional
+        Number of classes.  Inferred from ``label.max()`` when omitted.
+    ignore_index : int
+        Class id to exclude from the output (default 0 = background).
+
+    Returns
+    -------
+    onehot : torch.Tensor
+        Shape ``[B, C, H, W]``, float32, one channel per class
+        (background excluded when ``ignore_index=0``).
+    class_ids : list[int]
+        Class ids corresponding to each channel.
+    """
+    ids = sorted(
+        int(v) for v in label.unique().tolist() if int(v) != ignore_index
+    )
+    if n_classes is not None:
+        ids = [i for i in range(1, n_classes + 1) if i != ignore_index]
+
+    onehot = torch.stack(
+        [(label == c).to(torch.float32) for c in ids], dim=1
+    )  # (B, C, H, W)
+    return onehot, ids
+
+
+def _s2_bhw(x: torch.Tensor, radial: bool, eps: float):
+    """Core S2 computation for (B, H, W) float32 tensor."""
+    B, H, W = x.shape
+    F = torch.fft.fft2(x, dim=(-2, -1))
+    S2 = torch.real(torch.fft.ifft2(F * torch.conj(F), dim=(-2, -1))) / (H * W)
+    S2 = torch.fft.fftshift(S2, dim=(-2, -1))
+
+    if not radial:
+        return S2, None
+
+    device = x.device
+    yy, zz = torch.meshgrid(
+        torch.arange(H, device=device),
+        torch.arange(W, device=device),
+        indexing="ij",
+    )
+    r = torch.sqrt((yy - (H - 1) / 2.0) ** 2 + (zz - (W - 1) / 2.0) ** 2)
+    r_int = r.round().to(torch.int64)
+    rmax = int(r_int.max().item())
+
+    vals = S2.reshape(B, -1)
+    bins = r_int.reshape(-1)
+    prof = torch.zeros((B, rmax + 1), device=device, dtype=vals.dtype)
+    prof.scatter_add_(1, bins.unsqueeze(0).expand(B, -1), vals)
+    cnt = torch.zeros(rmax + 1, device=device, dtype=vals.dtype)
+    cnt.scatter_add_(0, bins, torch.ones_like(bins, dtype=vals.dtype))
+    prof = prof / cnt.clamp(min=eps)
+
+    return S2, prof  # (B, H, W), (B, R)
+
 
 @torch.no_grad()
 def s2_descriptor(patches: torch.Tensor, radial: bool = False, eps: float = 1e-12):
     """
-    Compute two-point correlation S2 for binary patches.
+    Compute two-point correlation S2.
 
     Parameters
     ----------
     patches : torch.Tensor
-        Shape [B, H, W], values in {0,1} (float/bool is fine). On CPU/GPU/MPS.
+        ``[B, H, W]``   — single binary phase per sample, or
+        ``[B, C, H, W]``— C one-hot channels (e.g. from ``onehot_from_labelmap``).
 
     Returns
     -------
-    result : dict
-        - 'S2':   (B,H,W)      centered two-point correlation
+    S2 : torch.Tensor
+        ``[B, H, W]`` or ``[B, C, H, W]``
+    S2r : torch.Tensor  (only when ``radial=True``)
+        ``[B, R]`` or ``[B, C, R]``
     """
-    assert patches.ndim == 3, "Expected [B,H,W]"
-    x = patches.to(torch.float32)
+    if patches.ndim == 3:
+        x = patches.to(torch.float32)
+        S2, prof = _s2_bhw(x, radial, eps)
+        return (S2, prof) if radial else S2
 
-    B, H, W = x.shape
+    assert patches.ndim == 4, "Expected [B, H, W] or [B, C, H, W]"
+    B, C, H, W = patches.shape
+    x = patches.to(torch.float32).reshape(B * C, H, W)
+    S2_flat, prof_flat = _s2_bhw(x, radial, eps)
+    S2 = S2_flat.reshape(B, C, H, W)
 
-
-    # ---- S2 via FFT (autocorrelation normalized by N) ----
-    F = torch.fft.fft2(x, dim=(-2, -1))
-    S2 = torch.real(torch.fft.ifft2(F * torch.conj(F), dim=(-2, -1))) / (H * W)
-    S2 = torch.fft.fftshift(S2, dim=(-2, -1))  # center
-    
     if radial:
-        # Precompute radius bins (shared for batch)
-        device = x.device
-        y = torch.arange(H, device=device)
-        z = torch.arange(W, device=device)
-        yy, zz = torch.meshgrid(y, z, indexing="ij")
-        cy, cz = (H - 1) / 2.0, (W - 1) / 2.0
-        r = torch.sqrt((yy - cy) ** 2 + (zz - cz) ** 2)
-        r_int = r.round().to(torch.int64)
-        rmax = int(r_int.max().item())
-
-        vals = S2.reshape(B, -1)
-        bins = r_int.reshape(-1)
-        prof = torch.zeros((B, rmax + 1), device=device, dtype=vals.dtype)
-        prof.scatter_add_(1, bins.unsqueeze(0).expand(B, -1), vals)
-
-        # counts per radius
-        cnt = torch.zeros(rmax + 1, device=device, dtype=vals.dtype)
-        cnt.scatter_add_(0, bins, torch.ones_like(bins, dtype=vals.dtype, device=device))
-        prof = prof / torch.clamp(cnt, min=eps)
-
-        return S2, prof  # (B, R)
-    
+        return S2, prof_flat.reshape(B, C, -1)   # (B, C, R)
     return S2
 
 
 @torch.no_grad()
-def phi_descriptor(patches: torch.Tensor):
+def phi_descriptor(patches: torch.Tensor) -> torch.Tensor:
     """
-    Compute volume fraction (phi) for binary patches.
+    Volume fraction per sample (and per channel for multi-phase input).
 
     Parameters
     ----------
     patches : torch.Tensor
-        Shape [B, H, W], values in {0,1} (float/bool is fine). On CPU/GPU/MPS.
+        ``[B, H, W]`` or ``[B, C, H, W]``
+
     Returns
     -------
-    result : dict
-        - 'phi':  (B,)         volume fraction
+    phi : torch.Tensor
+        ``[B]`` or ``[B, C]``
     """
-    assert patches.ndim == 3, "Expected [B,H,W]"
     x = patches.to(torch.float32)
-
-    B, H, W = x.shape
-
-    # ---- phi ----
-    phi = x.mean(dim=(1, 2))  # (B,)
-    return phi
+    if x.ndim == 3:
+        return x.mean(dim=(1, 2))          # (B,)
+    assert x.ndim == 4
+    return x.mean(dim=(2, 3))             # (B, C)
 
 
 @torch.no_grad()
