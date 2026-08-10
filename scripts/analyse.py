@@ -9,6 +9,7 @@ import warnings
 from typing import cast, Any, Tuple
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 warnings.filterwarnings("ignore", message=".*MPS.*fallback.*")
 warnings.filterwarnings("ignore", message=".*Please use the new API settings to control TF32 behavior.*")
@@ -51,12 +52,12 @@ def make_mask_generator(sam2):
     return SAM2AutomaticMaskGenerator(
         model=sam2,
         points_per_side=48,
-        points_per_batch=164,          # lower than 96 to reduce peak memory
+        points_per_batch=64,           # library default; 164 was above default and drove peak memory up
         pred_iou_thresh=0.1,
         min_mask_region_area=150,
         box_nms_thresh=0.1,
         stability_score_thresh=0.9,
-        # multimask_output=False,       # important
+        multimask_output=False,        # 1 mask/point instead of 3 -> ~3x less decoder memory
         # output_mode="uncompressed_rle"  # important
     )
 
@@ -136,7 +137,7 @@ def load_image_from_path(file_path):
 def find_mask_path(image_path):
     """
     Look for a companion mask next to image_path, following the
-    '<stem>_mask.<ext>' convention (e.g. img.tiff -> img_mask.png).
+    '<stem>.mask.<ext>' convention (e.g. img.tiff -> img.mask.png).
 
     Returns:
         str | None: path to the mask file, or None if not found.
@@ -145,7 +146,7 @@ def find_mask_path(image_path):
     stem = os.path.splitext(os.path.basename(image_path))[0]
 
     for ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg"):
-        candidate = os.path.join(folder, f"{stem}_mask{ext}")
+        candidate = os.path.join(folder, f"{stem}.mask{ext}")
         if os.path.isfile(candidate):
             return candidate
     return None
@@ -175,8 +176,8 @@ def load_mask_from_path(mask_path, target_shape):
 def extract_mask_aware_patches(
     image,                   # 2-D array
     mask,                    # 2-D binary array {0,1}
-    patch_size   = 256,
-    stride       = 128,      # used when refine=False
+    patch_size   = 512,
+    stride       = 256,      # used when refine=False
     min_cov      = 0.5,
     refine       = True,     # False → fast path: grid + coverage filter only
     stride_min   = 64,       # refine=True only
@@ -429,8 +430,8 @@ def main(args,
 
             del detections
             gc.collect()
-            torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
     
         print(cast(Tuple[int, int], padded_shape[:2]))
@@ -480,7 +481,7 @@ if __name__ == "__main__":
         '--output',
         type=str,
         required=False,
-        default=None,
+        default="results",
         help='Optional path to save the analysis results (e.g. HDF5, or image outputs).'
     )
 
@@ -510,20 +511,20 @@ if __name__ == "__main__":
         '--mask_aware',
         action='store_true',
         help="If set, use mask-guided patch extraction instead of a regular grid. "
-             "Requires a '<stem>_mask.<ext>' file next to each image; errors out if missing."
+             "Requires a '<stem>.mask.<ext>' file next to each image; errors out if missing."
     )
 
     parser.add_argument(
         '--mask_patch_size',
         type=int,
-        default=256,
+        default=512,
         help='Patch size (square) used for mask-aware tiling.'
     )
 
     parser.add_argument(
         '--mask_stride',
         type=int,
-        default=128,
+        default=256,
         help='Grid stride for mask-aware tiling (fast path, i.e. --mask_refine not set).'
     )
 
