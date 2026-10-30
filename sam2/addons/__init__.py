@@ -19,6 +19,7 @@ from .labelkit_io import (
 from .sam2_dataset import (
     load_specimen_h5,
     export_specimen_to_sa1b,
+    sa1b_to_labelme,
 )
 from .labelmap_tools import (
     iter_sam_masks,
@@ -63,4 +64,5 @@ __all__ = [
     # SAM 2 training dataset
     "load_specimen_h5",
     "export_specimen_to_sa1b",
+    "sa1b_to_labelme",
 ]

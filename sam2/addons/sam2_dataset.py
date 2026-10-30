@@ -231,3 +231,68 @@ def export_specimen_to_sa1b(
         with open(out_dir / f"{split}.txt", "a", encoding="utf-8") as f:
             f.writelines(f"{n}\n" for n in df["name"])
     return df
+
+
+def sa1b_to_labelme(dataset_dir, out_dir=None, label="fibre", tolerance=0.5):
+    """
+    Write LabelMe JSON files (one per window, polygon shapes) for an SA-1B dataset folder.
+
+    Each annotation mask becomes a polygon of its outer contour (``group_id`` = ``instance_id``),
+    simplified with Douglas-Peucker *tolerance* in px (0 = keep every contour pixel).
+    The files reference ``images/{name}.jpg`` relative to *out_dir*, default ``dataset_dir/labelme``.
+
+    Open in LabelMe: *Open Dir* → ``images/``, then *File → Change Output Dir* → *out_dir*.
+
+    Returns the number of files written.
+    """
+    import os
+
+    import cv2
+
+    dataset_dir = Path(dataset_dir)
+    out_dir = Path(out_dir) if out_dir is not None else dataset_dir / "labelme"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    n_files = 0
+    for ann_path in sorted((dataset_dir / "annotations").glob("*.json")):
+        with open(ann_path, encoding="utf-8") as f:
+            data = json.load(f)
+
+        shapes = []
+        for a in data["annotations"]:
+            m = mask_utils.decode(a["segmentation"])
+            cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not cs:
+                continue
+            c = max(cs, key=cv2.contourArea)
+            if tolerance > 0:
+                c = cv2.approxPolyDP(c, tolerance, True)
+            if len(c) < 3:
+                continue
+            shapes.append({
+                "label"      : label,
+                "points"     : c[:, 0, :].astype(float).tolist(),
+                "group_id"   : a.get("instance_id"),
+                "description": "",
+                "shape_type" : "polygon",
+                "flags"      : {},
+                "mask"       : None,
+            })
+
+        h, w = data["annotations"][0]["segmentation"]["size"] if data["annotations"] else (
+            data["image"]["height"], data["image"]["width"])
+        image_path = dataset_dir / "images" / f"{ann_path.stem}.jpg"
+        payload = {
+            "version"    : "5.5.0",
+            "flags"      : {},
+            "shapes"     : shapes,
+            "imagePath"  : os.path.relpath(image_path, out_dir),
+            "imageData"  : None,
+            "imageHeight": int(h),
+            "imageWidth" : int(w),
+        }
+        with open(out_dir / f"{ann_path.stem}.json", "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        n_files += 1
+
+    return n_files
