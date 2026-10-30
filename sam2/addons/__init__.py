@@ -1,6 +1,6 @@
 from .vizualization import show_anns, overlay_from_instances
 from .patcher import Sam2Patcher
-from .h5tools import write_h5, read_h5, delete_h5_if_exists
+from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5
 from .descriptors import (
     s2_descriptor,
     phi_descriptor,
@@ -10,7 +10,20 @@ from .descriptors import (
     corr_length_halfheight,
 )
 from .vsitools import read_vsi
-from .labelkit_io import load_labkit_json
+from .labelkit_io import (
+    load_labkit_json,
+    read_labelkit_json,
+    export_labels_to_labelkit,
+    merge_corrected_labels,
+)
+from .labelmap_tools import (
+    iter_sam_masks,
+    get_segmentation,
+    apply_mask_to_labelmap,
+    reindex_labelmap,
+    remove_labels,
+    split_label,
+)
 
 __all__ = [
     "Sam2Patcher",
@@ -21,6 +34,7 @@ __all__ = [
     "write_h5",
     "read_h5",
     "delete_h5_if_exists",
+    "specimen_to_h5",
     # descriptors
     "s2_descriptor",
     "phi_descriptor",
@@ -32,4 +46,14 @@ __all__ = [
     "read_vsi",
     # LabelKit I/O
     "load_labkit_json",
+    "read_labelkit_json",
+    "export_labels_to_labelkit",
+    "merge_corrected_labels",
+    # label maps
+    "iter_sam_masks",
+    "get_segmentation",
+    "apply_mask_to_labelmap",
+    "reindex_labelmap",
+    "remove_labels",
+    "split_label",
 ]

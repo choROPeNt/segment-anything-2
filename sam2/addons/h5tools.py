@@ -1,6 +1,11 @@
 import os
+from pathlib import Path
+
 import h5py 
 import numpy as np
+from PIL import Image
+
+from .labelmap_tools import apply_mask_to_labelmap, iter_sam_masks, get_segmentation
 
 
 def delete_h5_if_exists(h5_path: str) -> None:
@@ -154,3 +159,81 @@ def read_h5(path: str) -> dict:
         print(f"{prefix} {k:<20}: {info}")
 
     return out
+
+def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm"):
+    """
+    Load image + fixed label map + mask for one specimen,
+    apply mask, extract SAM2 instance crops, save to HDF5.
+
+    Parameters
+    ----------
+    specimen   : str   — specimen name, output is ``out_dir / f"{specimen}.h5"``
+    files      : dict  — paths with keys ``"image"``, ``"labels"``, ``"mask"``
+    out_dir    : Path
+    pixel_size : float, optional — isotropic pixel size; omitted from attrs if None
+    pixel_unit : str
+
+    HDF5 layout
+    -----------
+    /   attrs: specimen, pixel_size_x, pixel_size_y, pixel_size_unit,
+               image_shape, n_instances
+    /image                      (H, W, 3) uint8
+    /label_map                  (H, W)    uint16  — masked & reindexed
+    /mask                       (H, W)    uint8   — binary ROI mask (0/1)
+    /instances/<id>/
+        segmentation_crop       (h, w)    bool
+        bbox                    (4,)      int32   [x, y, w, h]
+        attrs: area, bbox_x, bbox_y, bbox_w, bbox_h
+    """
+    image     = np.asarray(Image.open(files["image"]))
+    label_raw = np.asarray(Image.open(files["labels"]))
+    mask      = np.asarray(Image.open(files["mask"])).astype(bool)
+
+    label_map_, _ = apply_mask_to_labelmap(label_raw, mask)
+
+    px_x = px_y = pixel_size
+    px_unit = pixel_unit
+
+    out_path = Path(out_dir) / f"{specimen}.h5"
+    with h5py.File(out_path, "w") as hf:
+
+        # --- root attributes ---
+        hf.attrs["specimen"]        = specimen
+        hf.attrs["image_shape"]     = image.shape
+        if px_x is not None:
+            hf.attrs["pixel_size_x"]    = px_x
+            hf.attrs["pixel_size_y"]    = px_y
+            hf.attrs["pixel_size_unit"] = px_unit
+
+        # --- datasets ---
+        ds_img  = hf.create_dataset("image",     data=image,                 compression="gzip")
+        ds_lm   = hf.create_dataset("label_map", data=label_map_,            compression="gzip")
+        ds_mask = hf.create_dataset("mask",      data=mask.astype(np.uint8), compression="gzip")
+
+        for ds in (ds_img, ds_lm, ds_mask):
+            ds.attrs["axes"] = "YXC" if ds.ndim == 3 else "YX"
+            if px_x is not None:
+                ds.attrs["pixel_size_x"]    = px_x
+                ds.attrs["pixel_size_y"]    = px_y
+                ds.attrs["pixel_size_unit"] = px_unit
+
+        grp = hf.create_group("instances")
+        instance_list = list(iter_sam_masks(label_map_))
+        hf.attrs["n_instances"] = len(instance_list)
+
+        for m in instance_list:
+            ig = grp.create_group(f"{m['id']:05d}")
+            ig.create_dataset("segmentation_crop",
+                              data=get_segmentation(m, label_map_),
+                              compression="gzip")
+            x, y, w, h = m["bbox"]
+            ig.create_dataset("bbox", data=np.array(m["bbox"], dtype=np.int32))
+            ig.attrs["area"]   = m["area"]
+            ig.attrs["bbox_x"] = x
+            ig.attrs["bbox_y"] = y
+            ig.attrs["bbox_w"] = w
+            ig.attrs["bbox_h"] = h
+            if px_x is not None:
+                ig.attrs["area_um2"] = m["area"] * px_x * px_y
+
+    return out_path
