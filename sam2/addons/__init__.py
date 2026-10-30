@@ -16,6 +16,10 @@ from .labelkit_io import (
     export_labels_to_labelkit,
     merge_corrected_labels,
 )
+from .sam2_dataset import (
+    load_specimen_h5,
+    export_specimen_to_sa1b,
+)
 from .labelmap_tools import (
     iter_sam_masks,
     get_segmentation,
@@ -56,4 +60,7 @@ __all__ = [
     "reindex_labelmap",
     "remove_labels",
     "split_label",
+    # SAM 2 training dataset
+    "load_specimen_h5",
+    "export_specimen_to_sa1b",
 ]
