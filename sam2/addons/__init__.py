@@ -23,6 +23,14 @@ from .sam2_dataset import (
     check_split_disjoint,
     sa1b_to_labelme,
 )
+from .evaluation import (
+    load_sa1b_window,
+    interior_points,
+    predict_from_points,
+    match_instances,
+    semantic_metrics,
+    train_overlap,
+)
 from .labelmap_tools import (
     iter_sam_masks,
     get_segmentation,
@@ -69,4 +77,11 @@ __all__ = [
     "spatial_split_regions",
     "check_split_disjoint",
     "sa1b_to_labelme",
+    # checkpoint evaluation
+    "load_sa1b_window",
+    "interior_points",
+    "predict_from_points",
+    "match_instances",
+    "semantic_metrics",
+    "train_overlap",
 ]
