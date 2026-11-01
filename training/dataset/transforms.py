@@ -316,10 +316,14 @@ class RandomAffine:
         log_warning=True,
         num_tentatives=1,
         image_interpolation="bicubic",
+        drop_empty_objects=False,
     ):
         """
         The mask is required for this transform.
         if consistent_transform if True, then the same random affine is applied to all frames and masks.
+        if drop_empty_objects is True, objects that leave the first frame are dropped
+        instead of rejecting the whole transform (the transform is only rejected if
+        no object is left). Useful for images with many objects near the border.
         """
         self.degrees = degrees if isinstance(degrees, list) else ([-degrees, degrees])
         self.scale = scale
@@ -331,6 +335,7 @@ class RandomAffine:
         self.consistent_transform = consistent_transform
         self.log_warning = log_warning
         self.num_tentatives = num_tentatives
+        self.drop_empty_objects = drop_empty_objects
 
         if image_interpolation == "bicubic":
             self.image_interpolation = InterpolationMode.BICUBIC
@@ -365,6 +370,7 @@ class RandomAffine:
                 img_size=img_size,
             )
 
+        empty_obj_ids = set()
         for img_idx, img in enumerate(datapoint.frames):
             this_masks = [
                 obj.segment.unsqueeze(0) if obj.segment is not None else None
@@ -395,12 +401,23 @@ class RandomAffine:
                     )
                     if img_idx == 0 and transformed_mask.max() == 0:
                         # We are dealing with a video and the object is not visible in the first frame
-                        # Return the datapoint without transformation
-                        return None
+                        if not self.drop_empty_objects:
+                            # Return the datapoint without transformation
+                            return None
+                        empty_obj_ids.add(i)
                     transformed_masks.append(transformed_mask.squeeze())
+
+            if img_idx == 0 and empty_obj_ids and len(empty_obj_ids) == len(img.objects):
+                # no object left in the first frame
+                return None
 
             for i in range(len(img.objects)):
                 img.objects[i].segment = transformed_masks[i]
+            if empty_obj_ids:
+                # drop the same objects from every frame to keep them aligned
+                img.objects = [
+                    obj for i, obj in enumerate(img.objects) if i not in empty_obj_ids
+                ]
 
             img.data = F.affine(
                 img.data,

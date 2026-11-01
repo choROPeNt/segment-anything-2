@@ -325,6 +325,9 @@ class SAM2Train(SAM2Base):
                 frames_to_add_correction_pt=frames_to_add_correction_pt,
                 output_dict=output_dict,
                 num_frames=num_frames,
+                # memory of the last frame is never read; skipping it saves a lot
+                # of memory (esp. for single-image training with many objects)
+                run_mem_encoder=stage_id < num_frames - 1,
             )
             # Append the output, depending on whether it's a conditioning frame
             add_output_as_cond_frame = stage_id in init_cond_frames or (
