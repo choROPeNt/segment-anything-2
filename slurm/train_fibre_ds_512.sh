@@ -22,7 +22,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$HOME/projects/alpha-capella/segment-anything-2"
-CONFIG="configs/sam2.1_training/sam2.1_hiera_t_fibre_ds_512.yaml"
+# Config can be passed as first argument, e.g.
+#   sbatch slurm/train_fibre_ds_512.sh configs/sam2.1_training/sam2.1_hiera_t_fibre_ds_512_train-val.yaml
+CONFIG="${1:-configs/sam2.1_training/sam2.1_hiera_t_fibre_ds_512.yaml}"
 
 cd "$PROJECT_DIR"
 mkdir -p out
