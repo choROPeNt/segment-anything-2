@@ -101,6 +101,75 @@ def _next_index(out_dir):
     return max(nums) + 1 if nums else 0
 
 
+def spatial_split_regions(length, size, val_frac=0.2, n_blocks=10, guard=128, seed=0):
+    """
+    Split one image axis into contiguous train / val regions separated by a guard band.
+
+    The axis is divided into *n_blocks* equal blocks; ``round(val_frac * n_blocks)`` of them
+    (at least one) are drawn as validation with *seed*.  Train regions are shortened by *guard*
+    px on every side that borders a val region, so no pixel — and no fibre smaller than *guard* —
+    can end up in both splits.  Regions shorter than *size* cannot hold a window and are dropped.
+
+    Returns
+    -------
+    list of (start, end, split) — half-open pixel intervals along the axis
+    """
+    edges = np.linspace(0, length, n_blocks + 1).round().astype(int)
+    n_val = min(max(1, int(round(val_frac * n_blocks))), n_blocks - 1)
+    val_blocks = set(np.random.default_rng(seed).choice(n_blocks, n_val, replace=False).tolist())
+
+    # merge neighbouring blocks with the same split
+    regions = []
+    for b in range(n_blocks):
+        split = "val" if b in val_blocks else "train"
+        if regions and regions[-1][2] == split:
+            regions[-1][1] = edges[b + 1]
+        else:
+            regions.append([edges[b], edges[b + 1], split])
+
+    out = []
+    for i, (start, end, split) in enumerate(regions):
+        if split == "train":
+            if i > 0:
+                start += guard
+            if i < len(regions) - 1:
+                end -= guard
+        if end - start >= size:
+            out.append((int(start), int(end), split))
+        else:
+            warnings.warn(f"{split} region [{start}, {end}) is shorter than the window size {size} — dropped")
+    return out
+
+
+def check_split_disjoint(manifest, guard=0):
+    """
+    Check a ``windows.csv`` manifest for leakage between splits.
+
+    * a specimen exported as whole-file split must not appear in another split
+    * within a specimen, no train window may overlap (or come closer than *guard* px to) a val window
+
+    Returns a list of problems (empty = clean).
+    """
+    df = pd.read_csv(manifest) if not isinstance(manifest, pd.DataFrame) else manifest
+    problems = []
+    for spec, d in df.groupby("specimen"):
+        splits = sorted(d["split"].unique())
+        if len(splits) < 2:
+            continue
+        if "split_mode" in d and (d["split_mode"] != "auto").any():
+            problems.append(f"{spec}: exported to several splits {splits} without spatial split")
+            continue
+        for a, b in [(s, t) for i, s in enumerate(splits) for t in splits[i + 1:]]:
+            A, B = d[d["split"] == a], d[d["split"] == b]
+            for r in A.itertuples():
+                close = ((B["x0"] < r.x0 + r.width + guard) & (r.x0 < B["x0"] + B["width"] + guard)
+                         & (B["y0"] < r.y0 + r.height + guard) & (r.y0 < B["y0"] + B["height"] + guard))
+                if close.any():
+                    problems.append(f"{spec}: {a} window {r.name} overlaps {b} window(s) "
+                                    f"{', '.join(B.loc[close, 'name'].head(3))}")
+    return problems
+
+
 def export_specimen_to_sa1b(
     h5_path,
     out_dir,
@@ -113,6 +182,10 @@ def export_specimen_to_sa1b(
     min_area=64,
     blank_outside_roi=False,
     jpeg_quality=95,
+    val_frac=0.2,
+    n_blocks=10,
+    guard=128,
+    seed=0,
     dry_run=False,
 ):
     """
@@ -125,12 +198,22 @@ def export_specimen_to_sa1b(
       instances cut by the ROI boundary are dropped (artificial straight outline)
     * *blank_outside_roi* fills pixels outside the ROI with the median colour outside the fibres
 
+    Splits
+    ------
+    * ``split="train"`` / ``"val"`` / ... — the whole specimen goes to that split (split by specimen)
+    * ``split="auto"`` — spatial split within the specimen along its long axis
+      (:func:`spatial_split_regions` with *val_frac*, *n_blocks*, *guard*, *seed*); every region is
+      tiled on its own, so train and val windows never share pixels or fibres
+
+    A specimen already present in ``windows.csv`` is refused — exporting it twice (e.g. once per split)
+    would leak it into both splits.
+
     Parameters
     ----------
     h5_path  : specimen ``.h5``
     out_dir  : dataset root, created if needed; existing files are kept and numbering continues
     specimen : name used in the window names / manifest (default: ``<grandparent>-<parent>-<stem>``)
-    split    : split label written to the manifest and to ``{split}.txt``
+    split    : split label, or ``"auto"`` for a spatial train / val split
     dry_run  : only analyse windows (manifest is returned, nothing is written)
 
     Returns
@@ -142,6 +225,14 @@ def export_specimen_to_sa1b(
     if specimen is None:
         specimen = "-".join(h5_path.with_suffix("").parts[-3:])
     specimen = specimen.replace("_", "-")          # the part after the last "_" must be the running number
+
+    manifest = out_dir / "windows.csv"
+    if not dry_run and manifest.exists():
+        done = pd.read_csv(manifest, usecols=["specimen", "split"])
+        if specimen in set(done["specimen"]):
+            prev = sorted(done.loc[done["specimen"] == specimen, "split"].unique())
+            raise ValueError(f"specimen {specimen!r} is already in {manifest} (split {prev}) — "
+                             "exporting it again would put the same data into several splits")
 
     image, label_map, roi, attrs = load_specimen_h5(h5_path)
     H, W = label_map.shape
@@ -166,70 +257,85 @@ def export_specimen_to_sa1b(
         (out_dir / "annotations").mkdir(parents=True, exist_ok=True)
     idx = _next_index(out_dir)
 
+    # windows per split region: (y0, x0, split); "auto" splits along the long axis
+    if split == "auto":
+        long_axis = 1 if W >= H else 0
+        regions = spatial_split_regions((H, W)[long_axis], size, val_frac, n_blocks, guard, seed)
+    else:
+        long_axis, regions = 1, [(0, W, split)]
+
+    windows = []
+    for start, end, reg_split in regions:
+        along = [start + p for p in window_positions(end - start, size, stride)]
+        across = window_positions((W, H)[long_axis], size, stride)
+        for a in along:
+            for c in across:
+                windows.append((c, a, reg_split) if long_axis == 1 else (a, c, reg_split))
+
     rows = []
-    for y0 in window_positions(H, size, stride):
-        for x0 in window_positions(W, size, stride):
-            y1, x1 = min(y0 + size, H), min(x0 + size, W)
-            h, w = y1 - y0, x1 - x0
-            roi_px = sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
-            cov = roi_px / (size * size)
-            if cov < min_roi_cov:
-                continue
+    for y0, x0, win_split in windows:
+        y1, x1 = min(y0 + size, H), min(x0 + size, W)
+        h, w = y1 - y0, x1 - x0
+        roi_px = sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
+        cov = roi_px / (size * size)
+        if cov < min_roi_cov:
+            continue
 
-            lab = label_map[y0:y1, x0:x1]
-            roi_w = roi_full[y0:y1, x0:x1]
-            ids, vis = np.unique(lab, return_counts=True)
-            vis, ids = vis[ids > 0], ids[ids > 0]
+        lab = label_map[y0:y1, x0:x1]
+        roi_w = roi_full[y0:y1, x0:x1]
+        ids, vis = np.unique(lab, return_counts=True)
+        vis, ids = vis[ids > 0], ids[ids > 0]
 
-            frac = vis / full_area[ids]
-            cut_by_roi = np.isin(ids, clipped)
-            ok = (frac >= min_visible_frac) & (vis >= min_area) & ~cut_by_roi
-            keep = ids[ok]
+        frac = vis / full_area[ids]
+        cut_by_roi = np.isin(ids, clipped)
+        ok = (frac >= min_visible_frac) & (vis >= min_area) & ~cut_by_roi
+        keep = ids[ok]
 
-            name = f"{specimen}_{idx:06d}"
-            fibre_roi = np.count_nonzero((lab > 0) & roi_w)
-            rows.append({
-                "name"         : name,
-                "specimen"     : specimen,
-                "split"        : split,
-                "h5"           : str(h5_path),
-                "x0"           : x0,
-                "y0"           : y0,
-                "width"        : w,
-                "height"       : h,
-                "roi_cov"      : round(float(cov), 4),
-                "n_instances"  : len(ids),
-                "n_kept"       : len(keep),
-                "n_complete"   : int(np.count_nonzero(ok & (frac >= 0.999))),
-                "n_dropped_cut": int(np.count_nonzero(~ok & ~cut_by_roi)),
-                "n_dropped_roi": int(np.count_nonzero(cut_by_roi)),
-                "fvg_roi"      : round(fibre_roi / max(int(roi_px), 1), 4),
-                "median_area"  : float(np.median(full_area[keep])) if len(keep) else 0.0,
-            })
+        name = f"{specimen}_{idx:06d}"
+        fibre_roi = np.count_nonzero((lab > 0) & roi_w)
+        rows.append({
+            "name"         : name,
+            "specimen"     : specimen,
+            "split"        : win_split,
+            "split_mode"   : "auto" if split == "auto" else "specimen",
+            "h5"           : str(h5_path),
+            "x0"           : x0,
+            "y0"           : y0,
+            "width"        : w,
+            "height"       : h,
+            "roi_cov"      : round(float(cov), 4),
+            "n_instances"  : len(ids),
+            "n_kept"       : len(keep),
+            "n_complete"   : int(np.count_nonzero(ok & (frac >= 0.999))),
+            "n_dropped_cut": int(np.count_nonzero(~ok & ~cut_by_roi)),
+            "n_dropped_roi": int(np.count_nonzero(cut_by_roi)),
+            "fvg_roi"      : round(fibre_roi / max(int(roi_px), 1), 4),
+            "median_area"  : float(np.median(full_area[keep])) if len(keep) else 0.0,
+        })
 
-            if not dry_run:
-                crop = image[y0:y1, x0:x1]
-                if (h, w) != (size, size):                  # pad to a square window (image smaller than size)
-                    pad = ((0, size - h), (0, size - w))
-                    crop = np.pad(crop, pad + ((0, 0),), mode="edge")
-                    lab = np.pad(lab, pad)
-                Image.fromarray(crop).save(out_dir / "images" / f"{name}.jpg",
-                                           quality=jpeg_quality, subsampling=0)
-                payload = {
-                    "image": {"image_id": idx, "file_name": f"{name}.jpg", "width": size, "height": size,
-                              "specimen": specimen, "x0": x0, "y0": y0},
-                    "annotations": window_annotations(lab, set(keep.tolist())),
-                }
-                with open(out_dir / "annotations" / f"{name}.json", "w", encoding="utf-8") as f:
-                    json.dump(payload, f)
-            idx += 1
+        if not dry_run:
+            crop = image[y0:y1, x0:x1]
+            if (h, w) != (size, size):                  # pad to a square window (image smaller than size)
+                pad = ((0, size - h), (0, size - w))
+                crop = np.pad(crop, pad + ((0, 0),), mode="edge")
+                lab = np.pad(lab, pad)
+            Image.fromarray(crop).save(out_dir / "images" / f"{name}.jpg",
+                                       quality=jpeg_quality, subsampling=0)
+            payload = {
+                "image": {"image_id": idx, "file_name": f"{name}.jpg", "width": size, "height": size,
+                          "specimen": specimen, "x0": x0, "y0": y0},
+                "annotations": window_annotations(lab, set(keep.tolist())),
+            }
+            with open(out_dir / "annotations" / f"{name}.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+        idx += 1
 
     df = pd.DataFrame(rows)
     if not dry_run and len(df):
-        manifest = out_dir / "windows.csv"
         df.to_csv(manifest, mode="a", header=not manifest.exists(), index=False)
-        with open(out_dir / f"{split}.txt", "a", encoding="utf-8") as f:
-            f.writelines(f"{n}\n" for n in df["name"])
+        for s, d in df.groupby("split"):
+            with open(out_dir / f"{s}.txt", "a", encoding="utf-8") as f:
+                f.writelines(f"{n}\n" for n in d["name"])
     return df
 
 

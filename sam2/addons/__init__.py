@@ -19,6 +19,8 @@ from .labelkit_io import (
 from .sam2_dataset import (
     load_specimen_h5,
     export_specimen_to_sa1b,
+    spatial_split_regions,
+    check_split_disjoint,
     sa1b_to_labelme,
 )
 from .labelmap_tools import (
@@ -64,5 +66,7 @@ __all__ = [
     # SAM 2 training dataset
     "load_specimen_h5",
     "export_specimen_to_sa1b",
+    "spatial_split_regions",
+    "check_split_disjoint",
     "sa1b_to_labelme",
 ]
