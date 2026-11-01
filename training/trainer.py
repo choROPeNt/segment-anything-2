@@ -330,7 +330,7 @@ class Trainer:
                 self.checkpoint_conf.save_freq > 0
                 and (int(epoch) % self.checkpoint_conf.save_freq == 0)
             ) or int(epoch) in self.checkpoint_conf.save_list:
-                checkpoint_names.append(f"checkpoint_{int(epoch)}")
+                checkpoint_names.append(f"checkpoint_{int(epoch):03d}")
 
         checkpoint_paths = []
         for ckpt_name in checkpoint_names:
