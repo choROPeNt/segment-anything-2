@@ -8,12 +8,12 @@ the same output folder appends (numbering continues).
 
 Split by specimen (preferred as soon as several specimens are available):
 
-    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/01.h5 -o data/fibre_ds --split train
-    python scripts/h5_to_sam2_dataset.py results/Promotion/200/batch_02/01.h5 -o data/fibre_ds --split val
+    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/160-02_01.h5 -o data/fibre_ds --split train
+    python scripts/h5_to_sam2_dataset.py results/Promotion/200/batch_02/200-02_01.h5 -o data/fibre_ds --split val
 
 Spatial split within one specimen (blocks along the long axis, guard band in between):
 
-    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/01.h5 -o data/fibre_ds --split auto \\
+    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/160-02_01.h5 -o data/fibre_ds --split auto \\
         --val-frac 0.2 --n-blocks 10 --guard 128
 
 Train and val never share pixels or fibres: a specimen can only be exported once per dataset,
@@ -22,7 +22,7 @@ overlapping train / val windows at the end.
 
 Analyse only (no files written):
 
-    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/01.h5 -o data/fibre_ds --split auto --dry-run
+    python scripts/h5_to_sam2_dataset.py results/Promotion/160/batch_02/160-02_01.h5 -o data/fibre_ds --split auto --dry-run
 """
 
 import argparse
@@ -44,7 +44,10 @@ def main():
     parser.add_argument("--size", type=int, default=1024, help="window size in px (default: 1024)")
     parser.add_argument("--stride", type=int, default=512, help="window stride in px (default: 512)")
     parser.add_argument("--min-roi-cov", type=float, default=0.8,
-                        help="min. fraction of the window inside the ROI mask (default: 0.8)")
+                        help="min. fraction of the window inside the (padded) ROI mask (default: 0.8)")
+    parser.add_argument("--roi-padding", type=int, default=0,
+                        help="grow the ROI by this many px for the window selection, so windows also cover the "
+                             "roving border / sparse regions; labels are unchanged (default: 0)")
     parser.add_argument("--min-visible-frac", type=float, default=0.3,
                         help="min. visible fraction of an instance cut by the window edge (default: 0.3)")
     parser.add_argument("--min-area", type=int, default=64, help="min. visible instance area in px (default: 64)")
@@ -74,6 +77,7 @@ def main():
             size=args.size,
             stride=args.stride,
             min_roi_cov=args.min_roi_cov,
+            roi_padding=args.roi_padding,
             min_visible_frac=args.min_visible_frac,
             min_area=args.min_area,
             blank_outside_roi=args.blank_outside_roi,

@@ -317,3 +317,50 @@ class Sam2Patcher:
                 "crop_box": crop_box,         # [x0, y0, x1, y1], global coords
             })
         return instances
+
+def downscale_detection(det, shape_hw, scale):
+    """
+    Bring one SAM 2 mask-generator detection from an upscaled patch back to patch size.
+
+    *scale* is the factor the patch was enlarged by; masks are area-resampled and thresholded at 0.5,
+    ``area`` / ``bbox`` are recomputed, ``point_coords`` / ``crop_box`` are divided by *scale*.
+    Returns None if nothing of the mask survives the downscaling.
+    """
+    import cv2
+
+    h, w = shape_hw
+    seg = cv2.resize(np.asarray(det["segmentation"], dtype=np.float32), (w, h),
+                     interpolation=cv2.INTER_AREA) >= 0.5
+    ys, xs = np.nonzero(seg)
+    if ys.size == 0:
+        return None
+    out = dict(det)
+    out["segmentation"] = seg
+    out["area"] = int(ys.size)
+    out["bbox"] = [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)]
+    if det.get("point_coords") is not None:
+        out["point_coords"] = (np.asarray(det["point_coords"], dtype=float) / scale).tolist()
+    if det.get("crop_box") is not None:
+        out["crop_box"] = [int(round(v / scale)) for v in det["crop_box"]]
+    return out
+
+
+def generate_upscaled(mask_generator, patch, target=1024):
+    """
+    Run a :class:`SAM2AutomaticMaskGenerator` on *patch* enlarged to *target* px (longer side) and
+    return the detections at the original patch size.
+
+    Useful for low-magnification images: small objects get the size SAM 2 works best at
+    (e.g. 256 px patches → 1024, factor 4).  ``target <= 0`` or a patch already that large: no rescaling.
+    """
+    import cv2
+
+    h, w = patch.shape[:2]
+    scale = target / max(h, w) if target and target > 0 else 1.0
+    if scale <= 1.0:
+        return mask_generator.generate(patch)
+
+    up = cv2.resize(patch, (int(round(w * scale)), int(round(h * scale))), interpolation=cv2.INTER_CUBIC)
+    dets = mask_generator.generate(up)
+    out = [downscale_detection(d, (h, w), scale) for d in dets]
+    return [d for d in out if d is not None]

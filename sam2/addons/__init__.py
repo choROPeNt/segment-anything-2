@@ -1,6 +1,6 @@
 from .vizualization import show_anns, overlay_from_instances
-from .patcher import Sam2Patcher
-from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5
+from .patcher import Sam2Patcher, generate_upscaled, downscale_detection
+from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5, read_instance_centroids
 from .descriptors import (
     s2_descriptor,
     phi_descriptor,
@@ -31,6 +31,37 @@ from .evaluation import (
     semantic_metrics,
     train_overlap,
 )
+from .point_patterns import (
+    MaskWindow,
+    window_mask_from_image,
+    k_function,
+    l_function,
+    pair_correlation,
+    nn_distances,
+    nn_function,
+    envelope,
+    quadrat_dispersion,
+    lgcp_pcf,
+    lgcp_k,
+    fit_lgcp_mincontrast,
+    gaussian_random_field,
+    simulate_lgcp,
+    simulate_hardcore_cox,
+    excursion_log_field,
+    boundary_profile,
+    fit_by_simulation,
+    kernel_intensity,
+)
+from .two_point import (
+    s2_window,
+    radial_profile,
+    integral_range,
+    box_fraction_variance,
+    box_variance_from_c2,
+    disk_covariance,
+    c2_from_pcf,
+    render_disks,
+)
 from .labelmap_tools import (
     iter_sam_masks,
     get_segmentation,
@@ -42,6 +73,8 @@ from .labelmap_tools import (
 
 __all__ = [
     "Sam2Patcher",
+    "generate_upscaled",
+    "downscale_detection",
     # visualisation
     "show_anns",
     "overlay_from_instances",
@@ -50,6 +83,7 @@ __all__ = [
     "read_h5",
     "delete_h5_if_exists",
     "specimen_to_h5",
+    "read_instance_centroids",
     # descriptors
     "s2_descriptor",
     "phi_descriptor",
@@ -84,4 +118,33 @@ __all__ = [
     "match_instances",
     "semantic_metrics",
     "train_overlap",
+    # point patterns / LGCP
+    "MaskWindow",
+    "window_mask_from_image",
+    "k_function",
+    "l_function",
+    "pair_correlation",
+    "nn_distances",
+    "nn_function",
+    "envelope",
+    "quadrat_dispersion",
+    "lgcp_pcf",
+    "lgcp_k",
+    "fit_lgcp_mincontrast",
+    "gaussian_random_field",
+    "simulate_lgcp",
+    "simulate_hardcore_cox",
+    "excursion_log_field",
+    "boundary_profile",
+    "fit_by_simulation",
+    "kernel_intensity",
+    # two-point statistics of a phase
+    "s2_window",
+    "radial_profile",
+    "integral_range",
+    "box_fraction_variance",
+    "box_variance_from_c2",
+    "disk_covariance",
+    "c2_from_pcf",
+    "render_disks",
 ]

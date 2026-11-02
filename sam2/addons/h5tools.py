@@ -237,3 +237,42 @@ def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm"):
                 ig.attrs["area_um2"] = m["area"] * px_x * px_y
 
     return out_path
+
+
+def read_instance_centroids(h5_path):
+    """
+    Centroids and areas of all instances of a result ``.h5`` — both layouts:
+
+    * specimen files (:func:`specimen_to_h5`): ``/instances/<id>/segmentation_crop`` with ``bbox_x`` /
+      ``bbox_y`` attributes, ``/mask``, pixel size in the file attributes
+    * raw ``scripts/analyse.py`` output: ``/instances/<id>/{segmentation_crop, bbox [x, y, w, h], area}``,
+      no mask, no pixel size
+
+    Returns
+    -------
+    dict with ``centroids`` (N, 2) [x, y] in px (pixel centres), ``areas`` (N,) px, ``keys``, ``mask``
+    ((H, W) bool or None), ``image_shape`` (H, W), ``pixel_size`` (float or None), ``pixel_unit``
+    """
+    with h5py.File(h5_path, "r") as hf:
+        keys = sorted(hf["instances"])
+        cent = np.zeros((len(keys), 2))
+        areas = np.zeros(len(keys))
+        for n, key in enumerate(keys):
+            g = hf["instances"][key]
+            seg = g["segmentation_crop"][()].astype(bool)
+            if "bbox_x" in g.attrs:
+                bx, by = float(g.attrs["bbox_x"]), float(g.attrs["bbox_y"])
+            else:
+                bx, by = (float(v) for v in g["bbox"][()][:2])
+            ys, xs = np.nonzero(seg)
+            cent[n] = xs.mean() + int(bx) + 0.5, ys.mean() + int(by) + 0.5
+            areas[n] = seg.sum()
+        if "image_shape" in hf.attrs:
+            shape = tuple(int(s) for s in hf.attrs["image_shape"][:2])
+        else:
+            shape = tuple(hf["image"].shape[:2])
+        mask = hf["mask"][()].astype(bool) if "mask" in hf else None
+        px = hf.attrs.get("pixel_size_x")
+        unit = hf.attrs.get("pixel_size_unit", "px") if px is not None else "px"
+    return {"centroids": cent, "areas": areas, "keys": keys, "mask": mask, "image_shape": shape,
+            "pixel_size": None if px is None else float(px), "pixel_unit": str(unit)}

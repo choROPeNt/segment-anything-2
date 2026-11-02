@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from pycocotools import mask as mask_utils
-from scipy.ndimage import binary_erosion, find_objects
+from scipy.ndimage import binary_erosion, distance_transform_edt, find_objects
 
 from .patcher import Sam2Patcher
 
@@ -178,6 +178,7 @@ def export_specimen_to_sa1b(
     size=1024,
     stride=512,
     min_roi_cov=0.8,
+    roi_padding=0,
     min_visible_frac=0.3,
     min_area=64,
     blank_outside_roi=False,
@@ -193,7 +194,10 @@ def export_specimen_to_sa1b(
 
     Per window
     ----------
-    * kept if the ROI covers at least *min_roi_cov* of it (whole image is ROI if the file has no mask)
+    * kept if the ROI covers at least *min_roi_cov* of it (whole image is ROI if the file has no mask);
+      with *roi_padding* > 0 the ROI is grown by that many px for the window selection only, so windows
+      also cover the roving border (resin rim, sparse tips, neighbouring layers) — labels stay unchanged
+    * windows without any kept instance are skipped (SAM 2 training cannot sample them)
     * an instance is kept if its visible part is >= *min_visible_frac* of its full area and >= *min_area* px;
       instances cut by the ROI boundary are dropped (artificial straight outline)
     * *blank_outside_roi* fills pixels outside the ROI with the median colour outside the fibres
@@ -240,6 +244,11 @@ def export_specimen_to_sa1b(
         warnings.warn(f"{h5_path} has no /mask — the whole image is used as ROI, "
                       "unlabelled fibres of neighbouring rovings end up in the windows")
     roi_full = roi if roi is not None else np.ones((H, W), dtype=bool)
+    # selection mask: ROI grown by roi_padding px (window choice only, labels are not affected)
+    if roi is not None and roi_padding > 0:
+        roi_sel = np.asarray(distance_transform_edt(~roi)) <= roi_padding
+    else:
+        roi_sel = roi_full
 
     full_area = np.bincount(label_map.ravel())
     clipped = np.array(sorted(roi_clipped_ids(label_map, roi)), dtype=label_map.dtype)
@@ -249,8 +258,10 @@ def export_specimen_to_sa1b(
         image = image.copy()
         image[~roi] = fill
 
-    # summed-area table → ROI coverage of any window in O(1)
+    # summed-area tables → ROI / selection coverage of any window in O(1)
     sat = np.pad(roi_full.cumsum(0, dtype=np.int64).cumsum(1), ((1, 0), (1, 0)))
+    sat_sel = sat if roi_sel is roi_full else np.pad(roi_sel.cumsum(0, dtype=np.int64).cumsum(1), ((1, 0), (1, 0)))
+    n_empty = 0
 
     if not dry_run:
         (out_dir / "images").mkdir(parents=True, exist_ok=True)
@@ -277,8 +288,9 @@ def export_specimen_to_sa1b(
         y1, x1 = min(y0 + size, H), min(x0 + size, W)
         h, w = y1 - y0, x1 - x0
         roi_px = sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
+        sel_px = sat_sel[y1, x1] - sat_sel[y0, x1] - sat_sel[y1, x0] + sat_sel[y0, x0]
         cov = roi_px / (size * size)
-        if cov < min_roi_cov:
+        if sel_px / (size * size) < min_roi_cov:
             continue
 
         lab = label_map[y0:y1, x0:x1]
@@ -290,6 +302,9 @@ def export_specimen_to_sa1b(
         cut_by_roi = np.isin(ids, clipped)
         ok = (frac >= min_visible_frac) & (vis >= min_area) & ~cut_by_roi
         keep = ids[ok]
+        if not len(keep):
+            n_empty += 1
+            continue
 
         name = f"{specimen}_{idx:06d}"
         fibre_roi = np.count_nonzero((lab > 0) & roi_w)
@@ -304,6 +319,7 @@ def export_specimen_to_sa1b(
             "width"        : w,
             "height"       : h,
             "roi_cov"      : round(float(cov), 4),
+            "sel_cov"      : round(float(sel_px) / (size * size), 4),
             "n_instances"  : len(ids),
             "n_kept"       : len(keep),
             "n_complete"   : int(np.count_nonzero(ok & (frac >= 0.999))),
@@ -329,6 +345,9 @@ def export_specimen_to_sa1b(
             with open(out_dir / "annotations" / f"{name}.json", "w", encoding="utf-8") as f:
                 json.dump(payload, f)
         idx += 1
+
+    if n_empty:
+        warnings.warn(f"{n_empty} windows without labelled fibres skipped (SAM 2 training cannot sample them)")
 
     df = pd.DataFrame(rows)
     if not dry_run and len(df):

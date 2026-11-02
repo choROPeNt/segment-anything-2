@@ -26,7 +26,8 @@ from tqdm import tqdm
 
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-from sam2.addons import (Sam2Patcher, 
+from sam2.addons import (Sam2Patcher,
+                         generate_upscaled,
                          show_anns, 
                          write_h5, 
                          delete_h5_if_exists)
@@ -48,10 +49,10 @@ def to_cpu(obj: Any) -> Any:
     return obj
 
 
-def make_mask_generator(sam2):
+def make_mask_generator(sam2, points_per_side=48):
     return SAM2AutomaticMaskGenerator(
         model=sam2,
-        points_per_side=48,
+        points_per_side=points_per_side,
         points_per_batch=64,           # library default; 164 was above default and drove peak memory up
         pred_iou_thresh=0.1,
         min_mask_region_area=150,
@@ -265,7 +266,7 @@ def extract_mask_aware_patches(
     iy_all   = iy_all[order];  ix_all = ix_all[order];  cov_keep = cov_keep[order]
 
     # variable suppression radius from distance transform
-    dist     = distance_transform_edt(mask.astype(bool))
+    dist     = np.asarray(distance_transform_edt(mask.astype(bool)))   # array (typed as tuple | None by scipy)
     dist_norm = np.tanh(dist / max(1.0, p / boundary_sharpness))
     rad_map  = stride_min + (stride_max - stride_min) * dist_norm
 
@@ -338,8 +339,9 @@ def main(args,
     #------------------------
     device = select_device()
 
-    sam2_checkpoint = "checkpoints/sam2.1_hiera_tiny.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
+    sam2_checkpoint = args.checkpoint
+    model_cfg = args.config
+    print(f"checkpoint: {sam2_checkpoint}")
 
     sam2 = build_sam2(model_cfg, sam2_checkpoint, device=str(device), apply_postprocessing=True)
 
@@ -347,10 +349,10 @@ def main(args,
     
     ## intialize tiler 
     patcher = Sam2Patcher(
-        patch_h=512, 
-        patch_w=512, 
-        overlap_h=64, 
-        overlap_w=64, 
+        patch_h=args.patch_size,
+        patch_w=args.patch_size,
+        overlap_h=args.overlap,
+        overlap_w=args.overlap,
         pad_mode="constant",
         merge_iou=0.1
     )
@@ -407,16 +409,18 @@ def main(args,
         delete_h5_if_exists(h5_path)
         all_detections = []
 
-        mask_generator = make_mask_generator(sam2)
+        mask_generator = make_mask_generator(sam2, points_per_side=args.points_per_side)
+        if args.upscale_to:
+            print(f"Patches are upscaled to {args.upscale_to} px for SAM 2 and the masks scaled back")
 
         for patch_idx, p in enumerate(tqdm(patches, total=len(patches), desc="Mask generation", unit="patch")):
 
             if device.type == "cuda":
                 with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    detections = mask_generator.generate(p)
+                    detections = generate_upscaled(mask_generator, p, args.upscale_to)
             else:
                 with torch.inference_mode():
-                    detections = mask_generator.generate(p)
+                    detections = generate_upscaled(mask_generator, p, args.upscale_to)
 
             mask_generator.predictor.reset_predictor()
 
@@ -430,8 +434,11 @@ def main(args,
 
             del detections
             gc.collect()
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            elif device.type == "mps":
+                torch.mps.empty_cache()
 
     
         print(cast(Tuple[int, int], padded_shape[:2]))
@@ -483,6 +490,49 @@ if __name__ == "__main__":
         required=False,
         default="results",
         help='Optional path to save the analysis results (e.g. HDF5, or image outputs).'
+    )
+
+    parser.add_argument(
+        '--checkpoint',
+        type=str,
+        default="checkpoints/sam2.1_hiera_tiny.pt",
+        help='SAM 2 checkpoint (base or fine-tuned).'
+    )
+
+    parser.add_argument(
+        '--config',
+        type=str,
+        default="configs/sam2.1/sam2.1_hiera_t.yaml",
+        help='Model config matching the checkpoint.'
+    )
+
+    parser.add_argument(
+        '--patch_size',
+        type=int,
+        default=512,
+        help='Patch size of the regular tiling (e.g. 256 for 20x images).'
+    )
+
+    parser.add_argument(
+        '--overlap',
+        type=int,
+        default=64,
+        help='Overlap between neighbouring patches in px.'
+    )
+
+    parser.add_argument(
+        '--upscale_to',
+        type=int,
+        default=0,
+        help='Upscale every patch to this size (longer side) before SAM 2, masks are scaled back '
+             '(e.g. 1024 for 256 px patches = factor 4). 0 = off.'
+    )
+
+    parser.add_argument(
+        '--points_per_side',
+        type=int,
+        default=48,
+        help='Point grid of the automatic mask generator per (upscaled) patch.'
     )
 
     parser.add_argument(
