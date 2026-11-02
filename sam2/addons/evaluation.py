@@ -41,7 +41,7 @@ def interior_points(masks):
     """One click per mask at its most interior pixel (max. distance to the boundary) → (N, 2) [x, y]."""
     pts = np.zeros((len(masks), 2), dtype=np.float32)
     for i, m in enumerate(masks):
-        d = distance_transform_edt(np.pad(m, 1))[1:-1, 1:-1]
+        d = np.asarray(distance_transform_edt(np.pad(m, 1)))[1:-1, 1:-1]
         y, x = np.unravel_index(np.argmax(d), d.shape)
         pts[i] = x, y
     return pts

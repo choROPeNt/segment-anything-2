@@ -1,5 +1,5 @@
 from .vizualization import show_anns, overlay_from_instances
-from .patcher import Sam2Patcher
+from .patcher import Sam2Patcher, generate_upscaled, downscale_detection
 from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5
 from .descriptors import (
     s2_descriptor,
@@ -42,6 +42,8 @@ from .labelmap_tools import (
 
 __all__ = [
     "Sam2Patcher",
+    "generate_upscaled",
+    "downscale_detection",
     # visualisation
     "show_anns",
     "overlay_from_instances",
