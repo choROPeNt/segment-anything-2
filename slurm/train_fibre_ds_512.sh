@@ -5,13 +5,14 @@
 ##################################################################
 ## SLURM Definitions
 ##################################################################
-#SBATCH --time=12:00:00
+#SBATCH --time=16:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --partition=capella
-#SBATCH --mem-per-cpu=12G
+#SBATCH --mem-per-cpu=6G
 #SBATCH --gres=gpu:1
+#SBATCH --gpus-per-task=1
 #SBATCH -J "SAM2-train-t-fibre512"
 #SBATCH --output=out/SAM2-train-%j.out
 #SBATCH --mail-user=christian.duereth@tu-dresden.de
@@ -48,3 +49,5 @@ srun --cpus-per-task="$SLURM_CPUS_PER_TASK" \
     -c "$CONFIG" \
     --use-cluster 0 \
     --num-gpus 1
+
+exit 0
