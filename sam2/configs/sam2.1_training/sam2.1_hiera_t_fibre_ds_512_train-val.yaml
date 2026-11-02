@@ -280,7 +280,7 @@ trainer:
       collate_fn:
         _target_: training.utils.data_utils.collate_fn
         _partial_: true
-        dict_key: all  # same key as train so the loss "all" is used
+        dict_key: fibre  # val needs its own key (not "all"), with a matching loss below
 
   optim:
     amp:
@@ -340,6 +340,7 @@ trainer:
       pred_obj_scores: true
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1.0
+    fibre: ${trainer.loss.all}  # same loss for validation -> Losses/val_fibre_*
 
   distributed:
     backend: nccl
