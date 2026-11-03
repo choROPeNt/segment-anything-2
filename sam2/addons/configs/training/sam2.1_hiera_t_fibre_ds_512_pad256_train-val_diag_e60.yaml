@@ -363,7 +363,7 @@ trainer:
   # initialize from a SAM 2 checkpoint
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
-    save_freq: 5 # keep a checkpoint_{epoch:03d}.pt after every 5th epoch
+    save_freq: 10 # keep a checkpoint_{epoch:03d}.pt after every 5th epoch
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model
@@ -386,7 +386,7 @@ submitit:
   partition: null
   account: null
   qos: null
-  cpus_per_task: 10
+  cpus_per_task: 12
   use_cluster: false
   timeout_hour: 24
   name: null
