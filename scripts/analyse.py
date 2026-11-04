@@ -14,6 +14,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 warnings.filterwarnings("ignore", message=".*MPS.*fallback.*")
 warnings.filterwarnings("ignore", message=".*Please use the new API settings to control TF32 behavior.*")
 
+import h5py
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -49,21 +50,61 @@ def to_cpu(obj: Any) -> Any:
     return obj
 
 
-def make_mask_generator(sam2, points_per_side=48):
+DEFAULT_CHECKPOINT = "checkpoints/sam2.1_hiera_tiny.pt"
+
+
+def make_mask_generator(sam2, points_per_side=48, pred_iou_thresh=0.1, stability_score_thresh=0.9,
+                        box_nms_thresh=0.1, min_mask_region_area=150):
     return SAM2AutomaticMaskGenerator(
         model=sam2,
         points_per_side=points_per_side,
         points_per_batch=64,           # library default; 164 was above default and drove peak memory up
-        pred_iou_thresh=0.1,
-        min_mask_region_area=150,
-        box_nms_thresh=0.1,
-        stability_score_thresh=0.9,
+        pred_iou_thresh=pred_iou_thresh,
+        min_mask_region_area=min_mask_region_area,
+        box_nms_thresh=box_nms_thresh,
+        stability_score_thresh=stability_score_thresh,
         multimask_output=False,        # 1 mask/point instead of 3 -> ~3x less decoder memory
         # output_mode="uncompressed_rle"  # important
     )
 
 
 
+
+
+def amg_params(args):
+    """AMG settings of this run (also stored as attributes of the result .h5)."""
+    return {
+        "points_per_side": args.points_per_side,
+        "pred_iou_thresh": args.pred_iou_thresh,
+        "stability_score_thresh": args.stability_score_thresh,
+        "box_nms_thresh": args.box_nms_thresh,
+        "min_mask_region_area": args.min_mask_region_area,
+    }
+
+
+def output_tag(args):
+    """
+    Suffix of the output names: --tag if given, else none for the base checkpoint and the checkpoint
+    file stem (e.g. ``checkpoint_060``) for any other, so results of different checkpoints do not
+    overwrite each other.
+    """
+    if args.tag is not None:
+        return args.tag
+    if os.path.normpath(args.checkpoint) == os.path.normpath(DEFAULT_CHECKPOINT):
+        return ""
+    return os.path.splitext(os.path.basename(args.checkpoint))[0]
+
+
+def load_sam2(model_cfg, checkpoint, device):
+    """build_sam2 with a readable error for a missing checkpoint or a checkpoint / config mismatch."""
+    if not os.path.isfile(checkpoint):
+        sys.exit(f"Error: checkpoint '{checkpoint}' not found.")
+    try:
+        return build_sam2(model_cfg, checkpoint, device=str(device), apply_postprocessing=True)
+    except RuntimeError as e:
+        sys.exit(f"Error: could not load '{checkpoint}' with model config '{model_cfg}' ({e}).\n"
+                 "The --config must match the model size the checkpoint was trained with, e.g. "
+                 "configs/sam2.1/sam2.1_hiera_t.yaml for Hiera-T fine-tunes (not the training config).")
 
 
 def select_device():
@@ -341,9 +382,12 @@ def main(args,
 
     sam2_checkpoint = args.checkpoint
     model_cfg = args.config
-    print(f"checkpoint: {sam2_checkpoint}")
+    tag = output_tag(args)
+    suffix = f".{tag}" if tag else ""
+    print(f"checkpoint: {sam2_checkpoint}  (config {model_cfg})")
+    print(f"output names: <file>{suffix}.h5" + (f"  (tag '{tag}', set with --tag)" if tag else ""))
 
-    sam2 = build_sam2(model_cfg, sam2_checkpoint, device=str(device), apply_postprocessing=True)
+    sam2 = load_sam2(model_cfg, sam2_checkpoint, device)
 
 
     
@@ -409,7 +453,7 @@ def main(args,
         delete_h5_if_exists(h5_path)
         all_detections = []
 
-        mask_generator = make_mask_generator(sam2, points_per_side=args.points_per_side)
+        mask_generator = make_mask_generator(sam2, **amg_params(args))
         if args.upscale_to:
             print(f"Patches are upscaled to {args.upscale_to} px for SAM 2 and the masks scaled back")
 
@@ -456,7 +500,7 @@ def main(args,
             show_anns(instances)
             plt.axis("off")
             plt.tight_layout()
-            plt.savefig(os.path.join(output_path,f"{file_name}_results.png"),dpi=300)
+            plt.savefig(os.path.join(output_path,f"{file_name}{suffix}_results.png"),dpi=300)
 
 
         if was_grayscale and image.ndim == 3:
@@ -470,7 +514,15 @@ def main(args,
             "instances": instances
         }
 
-        write_h5(path = os.path.join(output_path,file_name + ".h5"), dict_out= dict_out)
+        out_h5 = os.path.join(output_path, f"{file_name}{suffix}.h5")
+        write_h5(path=out_h5, dict_out=dict_out)
+        with h5py.File(out_h5, "a") as hf:       # provenance: which model / settings made these masks
+            hf.attrs["sam2_checkpoint"] = os.path.abspath(sam2_checkpoint)
+            hf.attrs["sam2_config"] = model_cfg
+            hf.attrs["sam2_tag"] = tag
+            for k, v in amg_params(args).items():
+                hf.attrs[f"amg_{k}"] = v
+        print(f"saved {out_h5}")
 
 
 #------------------
@@ -495,15 +547,25 @@ if __name__ == "__main__":
     parser.add_argument(
         '--checkpoint',
         type=str,
-        default="checkpoints/sam2.1_hiera_tiny.pt",
-        help='SAM 2 checkpoint (base or fine-tuned).'
+        default=DEFAULT_CHECKPOINT,
+        help='SAM 2 checkpoint: base model or a fine-tuned training checkpoint '
+             '(e.g. sam2_logs/<run>/checkpoints/checkpoint_060.pt).'
+    )
+
+    parser.add_argument(
+        '--tag',
+        type=str,
+        default=None,
+        help='Suffix of the output names (<file>.<tag>.h5). Default: none for the base checkpoint, '
+             'the checkpoint file stem otherwise. Pass --tag "" to write plain <file>.h5.'
     )
 
     parser.add_argument(
         '--config',
         type=str,
         default="configs/sam2.1/sam2.1_hiera_t.yaml",
-        help='Model config matching the checkpoint.'
+        help='Model config matching the checkpoint (model size; for a Hiera-T fine-tune the same '
+             'configs/sam2.1/sam2.1_hiera_t.yaml, not the training config).'
     )
 
     parser.add_argument(
@@ -533,6 +595,35 @@ if __name__ == "__main__":
         type=int,
         default=48,
         help='Point grid of the automatic mask generator per (upscaled) patch.'
+    )
+
+    parser.add_argument(
+        '--pred_iou_thresh',
+        type=float,
+        default=0.1,
+        help='AMG: drop masks with predicted IoU below this (fine-tuned IoU heads are well calibrated, '
+             'e.g. 0.85-0.9 removes weak masks).'
+    )
+
+    parser.add_argument(
+        '--stability_score_thresh',
+        type=float,
+        default=0.9,
+        help='AMG: drop masks whose stability score (IoU under logit-threshold shifts) is below this.'
+    )
+
+    parser.add_argument(
+        '--box_nms_thresh',
+        type=float,
+        default=0.1,
+        help='AMG: box IoU for non-maximum suppression of duplicate masks within a patch.'
+    )
+
+    parser.add_argument(
+        '--min_mask_region_area',
+        type=int,
+        default=150,
+        help='AMG: remove holes / islands smaller than this many px from each mask.'
     )
 
     parser.add_argument(
