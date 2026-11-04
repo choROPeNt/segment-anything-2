@@ -31,6 +31,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import torch
@@ -255,7 +256,7 @@ def main():
                 axes[0, 0].plot(pts[:, 0], pts[:, 1], "o", ms=2.5, mfc="white", mec="black", mew=0.3)
                 error_map(axes[1, 0], image, gt, gt, f"residual legend — GT FVG {fvg_gt:.3f}")
                 axes[1, 0].legend(
-                    handles=[plt.matplotlib.patches.Patch(color=residual_rgba(k)[:3], label=RESIDUAL_COLORS[k][0])
+                    handles=[Patch(color=residual_rgba(k)[:3], label=RESIDUAL_COLORS[k][0])
                              for k in ("correct", "extra", "missed")],
                     loc="lower left", fontsize=7, framealpha=0.9)
                 for c, (lab, mode) in enumerate(cols[1:], start=1):
