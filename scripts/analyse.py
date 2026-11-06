@@ -50,7 +50,11 @@ def to_cpu(obj: Any) -> Any:
     return obj
 
 
-DEFAULT_CHECKPOINT = "checkpoints/sam2.1_hiera_tiny.pt"
+BASE_CHECKPOINT = "checkpoints/sam2.1_hiera_tiny.pt"
+# fine-tuned Hiera-T (fibre_ds_512_pad256, 60 epochs); default AMG filters below from the sweep in
+# <run>/eval_val_opti (scripts/sweep_amg.py, 16 points per side: F1 1.000 vs. 0.991 with the old filters)
+DEFAULT_CHECKPOINT = ("sam2_logs/configs/sam2.1_training/sam2.1_hiera_t_fibre_ds_512_pad256_train-val_diag_e60.yaml/"
+                      "checkpoints/checkpoint_060.pt")
 
 
 def make_mask_generator(sam2, points_per_side=48, pred_iou_thresh=0.1, stability_score_thresh=0.9,
@@ -84,13 +88,13 @@ def amg_params(args):
 
 def output_tag(args):
     """
-    Suffix of the output names: --tag if given, else none for the base checkpoint and the checkpoint
+    Suffix of the output names: --tag if given, else none for the base model and the checkpoint
     file stem (e.g. ``checkpoint_060``) for any other, so results of different checkpoints do not
     overwrite each other.
     """
     if args.tag is not None:
         return args.tag
-    if os.path.normpath(args.checkpoint) == os.path.normpath(DEFAULT_CHECKPOINT):
+    if os.path.normpath(args.checkpoint) == os.path.normpath(BASE_CHECKPOINT):
         return ""
     return os.path.splitext(os.path.basename(args.checkpoint))[0]
 
@@ -548,16 +552,16 @@ if __name__ == "__main__":
         '--checkpoint',
         type=str,
         default=DEFAULT_CHECKPOINT,
-        help='SAM 2 checkpoint: base model or a fine-tuned training checkpoint '
-             '(e.g. sam2_logs/<run>/checkpoints/checkpoint_060.pt).'
+        help='SAM 2 checkpoint (default: the fine-tuned e60 checkpoint; base model: '
+             f'{BASE_CHECKPOINT}).'
     )
 
     parser.add_argument(
         '--tag',
         type=str,
         default=None,
-        help='Suffix of the output names (<file>.<tag>.h5). Default: none for the base checkpoint, '
-             'the checkpoint file stem otherwise. Pass --tag "" to write plain <file>.h5.'
+        help='Suffix of the output names (<file>.<tag>.h5). Default: none for the base model, '
+             'the checkpoint file stem otherwise (checkpoint_060). Pass --tag "" to write plain <file>.h5.'
     )
 
     parser.add_argument(
@@ -593,30 +597,33 @@ if __name__ == "__main__":
     parser.add_argument(
         '--points_per_side',
         type=int,
-        default=48,
-        help='Point grid of the automatic mask generator per (upscaled) patch.'
+        default=16,
+        help='Point grid of the automatic mask generator per (upscaled) patch (default 16: ~32 px spacing '
+             'in 512 px patches, enough for ~58 px fibres at 50x; 32 found no more fibres in the sweep '
+             'but takes ~3x longer).'
     )
 
     parser.add_argument(
         '--pred_iou_thresh',
         type=float,
-        default=0.1,
-        help='AMG: drop masks with predicted IoU below this (fine-tuned IoU heads are well calibrated, '
-             'e.g. 0.85-0.9 removes weak masks).'
+        default=0.88,
+        help='AMG: drop masks with predicted IoU below this (default tuned for the fine-tuned checkpoint; '
+             'use ~0.1 for the base model, whose IoU head is not calibrated for fibres).'
     )
 
     parser.add_argument(
         '--stability_score_thresh',
         type=float,
-        default=0.9,
+        default=0.8,
         help='AMG: drop masks whose stability score (IoU under logit-threshold shifts) is below this.'
     )
 
     parser.add_argument(
         '--box_nms_thresh',
         type=float,
-        default=0.1,
-        help='AMG: box IoU for non-maximum suppression of duplicate masks within a patch.'
+        default=0.2,
+        help='AMG: box IoU for non-maximum suppression of duplicate masks within a patch '
+             '(0.1 suppresses some close neighbours).'
     )
 
     parser.add_argument(
