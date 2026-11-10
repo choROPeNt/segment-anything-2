@@ -1,6 +1,6 @@
 from .vizualization import show_anns, overlay_from_instances
 from .patcher import Sam2Patcher, generate_upscaled, downscale_detection
-from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5, read_instance_centroids
+from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5, read_instance_centroids, add_previews
 from .descriptors import (
     s2_descriptor,
     phi_descriptor,
@@ -15,6 +15,7 @@ from .labelkit_io import (
     read_labelkit_json,
     export_labels_to_labelkit,
     merge_corrected_labels,
+    h5_to_labkit,
 )
 from .sam2_dataset import (
     load_specimen_h5,
@@ -84,6 +85,7 @@ __all__ = [
     "delete_h5_if_exists",
     "specimen_to_h5",
     "read_instance_centroids",
+    "add_previews",
     # descriptors
     "s2_descriptor",
     "phi_descriptor",
@@ -97,6 +99,7 @@ __all__ = [
     "load_labkit_json",
     "read_labelkit_json",
     "export_labels_to_labelkit",
+    "h5_to_labkit",
     "merge_corrected_labels",
     # label maps
     "iter_sam_masks",

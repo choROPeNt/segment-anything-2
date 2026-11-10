@@ -29,6 +29,7 @@ from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.addons import (Sam2Patcher,
                          generate_upscaled,
+                         add_previews,
                          show_anns, 
                          write_h5, 
                          delete_h5_if_exists)
@@ -526,6 +527,8 @@ def main(args,
             hf.attrs["sam2_tag"] = tag
             for k, v in amg_params(args).items():
                 hf.attrs[f"amg_{k}"] = v
+        if args.preview:
+            add_previews(out_h5, args.preview)
         print(f"saved {out_h5}")
 
 
@@ -647,6 +650,14 @@ if __name__ == "__main__":
         required=False,
         default=None,
         help='Optional maximum area threshold; detections with area >= max_area are excluded.'
+    )
+
+    parser.add_argument(
+        '--preview',
+        type=int,
+        default=2,
+        help='Also store image_preview / labels_preview downscaled by this factor for viewing in H5Web '
+             '(VS Code; images wider than ~16384 px are not displayed). 0 = off.'
     )
 
     parser.add_argument(

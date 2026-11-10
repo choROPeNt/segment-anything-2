@@ -220,3 +220,44 @@ def merge_corrected_labels(label_map, corrected_json, ids_to_replace, meta):
         base[corrected_map == nid] = offset + int(nid)
 
     return reindex_labelmap(base)
+
+
+def h5_to_labkit(h5_path, out_dir=None, image_key="image", labels_key="labels", overwrite=False):
+    """
+    Export a segmentation result ``.h5`` (e.g. from ``scripts/analyse.py``) for review in Labkit:
+    ``<stem>.tiff`` (the image) and ``<stem>.labeling`` (every instance of the label map, same sparse
+    JSON format as :func:`export_labels_to_labelkit`, pixel coordinates).
+
+    Parameters
+    ----------
+    h5_path : str or Path
+    out_dir : folder for both files (default: next to the h5)
+    image_key, labels_key : datasets of the image and the instance label map in the h5
+    overwrite : rewrite existing files (default: skip them)
+
+    Returns
+    -------
+    (tiff_path, labeling_path)
+    """
+    import cv2
+    import h5py
+
+    h5_path = Path(h5_path)
+    out_dir = h5_path.parent if out_dir is None else Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tif, lab = out_dir / f"{h5_path.stem}.tiff", out_dir / f"{h5_path.stem}.labeling"
+
+    with h5py.File(h5_path, "r") as hf:
+        if overwrite or not tif.exists():
+            image = hf[image_key][()]
+            if image.ndim == 3:
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)       # cv2 writes BGR
+            cv2.imwrite(str(tif), image)
+            del image
+        if overwrite or not lab.exists():
+            label_map = hf[labels_key][()]
+            H, W = label_map.shape
+            meta = {"interval": {"min": [0, 0], "max": [W - 1, H - 1], "n": 2},
+                    "pixelSizes": [{"size": 1.0}, {"size": 1.0}]}
+            export_labels_to_labelkit(label_map, range(1, int(label_map.max()) + 1), lab, meta)
+    return tif, lab

@@ -160,7 +160,55 @@ def read_h5(path: str) -> dict:
 
     return out
 
-def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm"):
+PREVIEW_KEYS = ("image", "labels", "label_map", "mask")
+
+
+def add_previews(h5_path, factor=2, keys=PREVIEW_KEYS):
+    """
+    Write downscaled ``<key>_preview`` datasets for viewing large images in H5Web (VS Code): its heatmap /
+    RGB view draws one WebGL texture, limited to ~16384 px per side.
+
+    * image (H, W, 3) or (H, W): area-averaged, uint8, marked as HDF5 image (``CLASS = IMAGE``,
+      ``IMAGE_SUBCLASS = IMAGE_TRUECOLOR`` for RGB) so H5Web offers the RGB view
+    * labels / label_map / mask: every *factor*-th pixel (nearest) — instance ids stay valid
+
+    Existing previews are replaced; datasets that are missing or not 2-D/3-D images are skipped.
+    Returns the names of the written datasets.
+    """
+    import cv2
+
+    written = []
+    with h5py.File(h5_path, "a") as hf:
+        for key in keys:
+            if key not in hf or not isinstance(hf[key], h5py.Dataset) or hf[key].ndim not in (2, 3):
+                continue
+            src = hf[key]
+            if key == "image":
+                img = src[()]
+                h, w = img.shape[:2]
+                prev = cv2.resize(img, (max(w // factor, 1), max(h // factor, 1)), interpolation=cv2.INTER_AREA)
+            else:                                   # same size as the image preview (floor)
+                h, w = src.shape[:2]
+                prev = src[: (h // factor) * factor: factor, : (w // factor) * factor: factor]
+            name = f"{key}_preview"
+            if name in hf:
+                del hf[name]
+            ds = hf.create_dataset(name, data=prev, compression="gzip", compression_opts=4)
+            ds.attrs["preview_of"] = key
+            ds.attrs["preview_factor"] = factor
+            if key == "image":
+                ds.attrs["CLASS"] = np.bytes_("IMAGE")
+                ds.attrs["IMAGE_VERSION"] = np.bytes_("1.2")
+                if prev.ndim == 3 and prev.shape[2] == 3:
+                    ds.attrs["IMAGE_SUBCLASS"] = np.bytes_("IMAGE_TRUECOLOR")
+                    ds.attrs["INTERLACE_MODE"] = np.bytes_("INTERLACE_PIXEL")
+                else:
+                    ds.attrs["IMAGE_SUBCLASS"] = np.bytes_("IMAGE_GRAYSCALE")
+            written.append(name)
+    return written
+
+
+def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm", preview=2):
     """
     Load image + fixed label map + mask for one specimen,
     apply mask, extract SAM2 instance crops, save to HDF5.
@@ -172,6 +220,8 @@ def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm"):
     out_dir    : Path
     pixel_size : float, optional — isotropic pixel size; omitted from attrs if None
     pixel_unit : str
+    preview    : int  — also write ``<key>_preview`` datasets downscaled by this factor (:func:`add_previews`),
+                 0 = none
 
     HDF5 layout
     -----------
@@ -236,6 +286,8 @@ def specimen_to_h5(specimen, files, out_dir, pixel_size=None, pixel_unit="µm"):
             if px_x is not None:
                 ig.attrs["area_um2"] = m["area"] * px_x * px_y
 
+    if preview:
+        add_previews(out_path, preview)
     return out_path
 
 
@@ -254,11 +306,12 @@ def read_instance_centroids(h5_path):
     ((H, W) bool or None), ``image_shape`` (H, W), ``pixel_size`` (float or None), ``pixel_unit``
     """
     with h5py.File(h5_path, "r") as hf:
-        keys = sorted(hf["instances"])
+        inst = hf["labeling/instances"] if "labeling/instances" in hf else hf["instances"]   # folder layout / flat
+        keys = sorted(inst)
         cent = np.zeros((len(keys), 2))
         areas = np.zeros(len(keys))
         for n, key in enumerate(keys):
-            g = hf["instances"][key]
+            g = inst[key]
             seg = g["segmentation_crop"][()].astype(bool)
             if "bbox_x" in g.attrs:
                 bx, by = float(g.attrs["bbox_x"]), float(g.attrs["bbox_y"])
