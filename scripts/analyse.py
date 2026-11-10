@@ -99,6 +99,139 @@ def output_tag(args):
     return os.path.splitext(os.path.basename(args.checkpoint))[0]
 
 
+def shape_metrics(seg):
+    """
+    Roundness of one binary instance mask.
+
+    Returns:
+        circularity: 4*pi*A / P^2 (1 = disk, lower for ragged / concave / fragmented shapes). P is the
+                     summed outer contour length of all components, so split instances score low. Clipped
+                     to 1 (pixel contours slightly underestimate P of small disks).
+        axis_ratio:  minor / major axis of the moment-equivalent ellipse (1 = round, -> 0 = elongated).
+    """
+    import cv2
+
+    seg = np.asarray(seg, dtype=bool)
+    area = int(seg.sum())
+    if area < 3:
+        return 0.0, 0.0
+
+    padded = np.pad(seg, 1).astype(np.uint8)          # contours touching the crop edge stay closed
+    contours, _ = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    perimeter = sum(cv2.arcLength(c, closed=True) for c in contours)
+    circularity = min(1.0, 4.0 * np.pi * area / perimeter**2) if perimeter > 0 else 0.0
+
+    ys, xs = np.nonzero(seg)
+    cov = np.cov(np.stack([xs, ys]).astype(np.float64))
+    ev = np.linalg.eigvalsh(cov)                      # ascending
+    axis_ratio = float(np.sqrt(max(ev[0], 0.0) / ev[1])) if ev[1] > 0 else 0.0
+
+    return float(circularity), axis_ratio
+
+
+def filter_round_instances(label_map, instances, min_circularity=0.0, min_axis_ratio=0.0):
+    """
+    Drop stitched instances that are not nearly round: circularity < min_circularity or
+    axis_ratio < min_axis_ratio (0 disables a criterion). Removed instances are set to 0 in
+    *label_map* (in place); kept instances get 'circularity' / 'axis_ratio' entries.
+    """
+    if min_circularity <= 0 and min_axis_ratio <= 0:
+        return label_map, instances
+
+    kept = []
+    for inst in instances:
+        circ, ar = shape_metrics(inst["segmentation_crop"])
+        if circ >= min_circularity and ar >= min_axis_ratio:
+            inst["circularity"] = circ
+            inst["axis_ratio"] = ar
+            kept.append(inst)
+        else:
+            x, y, w, h = inst["bbox"]
+            sub = label_map[y:y + h, x:x + w]
+            sub[sub == inst["id"]] = 0
+
+    print(f"Roundness filter (circularity >= {min_circularity}, axis ratio >= {min_axis_ratio}): "
+          f"kept {len(kept)}/{len(instances)} instances")
+    return label_map, kept
+
+
+def filter_instances_in_mask(label_map, instances, mask, min_inside=0.5):
+    """
+    Drop stitched instances lying outside the region *mask*: an instance is kept only if at least
+    *min_inside* of its pixels fall inside the mask (1.0 = completely inside). Removed instances
+    are set to 0 in *label_map* (in place); kept instances get a 'mask_inside' entry.
+    """
+    kept = []
+    for inst in instances:
+        x, y, w, h = inst["bbox"]
+        seg = np.asarray(inst["segmentation_crop"], dtype=bool)
+        inside = float(mask[y:y + h, x:x + w][seg].sum()) / max(int(seg.sum()), 1)
+        if inside >= min_inside:
+            inst["mask_inside"] = inside
+            kept.append(inst)
+        else:
+            sub = label_map[y:y + h, x:x + w]
+            sub[sub == inst["id"]] = 0
+
+    print(f"Mask filter (>= {min_inside:.0%} of the object inside the mask): "
+          f"kept {len(kept)}/{len(instances)} instances")
+    return label_map, kept
+
+
+def otsu_threshold(values, nbins=256):
+    """Otsu threshold of a 1-D array (any dtype): the value best separating dark and bright pixels."""
+    values = np.asarray(values, dtype=np.float64).ravel()
+    lo, hi = float(values.min()), float(values.max())
+    if hi <= lo:
+        return lo
+    hist, edges = np.histogram(values, bins=nbins, range=(lo, hi))
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    w0 = np.cumsum(hist).astype(np.float64)              # pixels at or below each bin
+    w1 = w0[-1] - w0
+    m0 = np.cumsum(hist * centers)
+    mu0 = m0 / np.maximum(w0, 1)
+    mu1 = (m0[-1] - m0) / np.maximum(w1, 1)
+    between = w0 * w1 * (mu0 - mu1) ** 2                 # between-class variance
+    return float(edges[int(np.argmax(between[:-1])) + 1])  # upper edge of the last dark bin
+
+
+def filter_bright_instances(label_map, instances, image, region=None, min_bright_fraction=0.5,
+                            threshold=None):
+    """
+    Drop stitched instances that are not bright: fibres are bright, the matrix between them is dark.
+    An instance is kept if at least *min_bright_fraction* of its pixels are brighter than *threshold*
+    (default: Otsu threshold of the image, computed only inside *region* (the mask) if given).
+    Removed instances are set to 0 in *label_map* (in place); kept instances get 'mean_intensity'
+    and 'bright_fraction' entries.
+    """
+    gray = image.mean(axis=-1) if image.ndim == 3 else image
+    gray = np.asarray(gray, dtype=np.float32)
+    if threshold is None:
+        sample = gray[region.astype(bool)] if region is not None else gray
+        threshold = otsu_threshold(sample)
+        how = "Otsu" + (" inside mask" if region is not None else "")
+    else:
+        how = "given"
+
+    kept = []
+    for inst in instances:
+        x, y, w, h = inst["bbox"]
+        seg = np.asarray(inst["segmentation_crop"], dtype=bool)
+        vals = gray[y:y + h, x:x + w][seg]
+        bright = float((vals > threshold).mean()) if vals.size else 0.0
+        if bright >= min_bright_fraction:
+            inst["mean_intensity"] = float(vals.mean())
+            inst["bright_fraction"] = bright
+            kept.append(inst)
+        else:
+            sub = label_map[y:y + h, x:x + w]
+            sub[sub == inst["id"]] = 0
+
+    print(f"Brightness filter (>= {min_bright_fraction:.0%} of pixels above {threshold:.1f}, {how}): "
+          f"kept {len(kept)}/{len(instances)} instances")
+    return label_map, kept, threshold
+
+
 def load_sam2(model_cfg, checkpoint, device):
     """build_sam2 with a readable error for a missing checkpoint or a checkpoint / config mismatch."""
     if not os.path.isfile(checkpoint):
@@ -364,7 +497,9 @@ def main(args,
 
     # get list of valid files in input path
     if args.dir_flag:
-        files = [f for f in os.listdir(input_path) if f.lower().endswith(valid_exts)]
+        files = sorted(f for f in os.listdir(input_path)
+                       if f.lower().endswith(valid_exts)
+                       and not os.path.splitext(f)[0].endswith(".mask"))   # skip companion masks
         file_paths = [os.path.join(input_path, f) for f in files]
         file_names  = [os.path.splitext(f)[0] for f in files]
         print(f"Found {len(files)} valid files in {input_path}")
@@ -402,7 +537,7 @@ def main(args,
         overlap_h=args.overlap,
         overlap_w=args.overlap,
         pad_mode="constant",
-        merge_iou=0.1
+        merge_iou=args.merge_iou
     )
 
 
@@ -416,11 +551,11 @@ def main(args,
         # image = image[:,:2048]
         ## Patching
         if args.mask_aware:
-            mask_path = find_mask_path(file_path)
+            mask_path = args.mask if args.mask else find_mask_path(file_path)
             if mask_path is None:
                 raise FileNotFoundError(
                     f"--mask_aware is set but no mask found for '{file_path}' "
-                    f"(expected '{os.path.splitext(file_path)[0]}_mask.<ext>')"
+                    f"(expected '{os.path.splitext(file_path)[0]}.mask.<ext>', or pass --mask)"
                 )
             mask = load_mask_from_path(mask_path, target_shape=image.shape[:2])
             print(f"Using mask-aware tiling with mask: {os.path.basename(mask_path)}")
@@ -498,6 +633,26 @@ def main(args,
             debug=False,
         )
 
+        if args.mask_aware:
+            label_map, instances = filter_instances_in_mask(
+                label_map, instances, mask, min_inside=args.mask_min_inside,
+            )
+
+        bright_threshold = args.bright_threshold
+        if args.min_bright_fraction > 0:
+            label_map, instances, bright_threshold = filter_bright_instances(
+                label_map, instances, image,
+                region=mask if args.mask_aware else None,
+                min_bright_fraction=args.min_bright_fraction,
+                threshold=args.bright_threshold,
+            )
+
+        label_map, instances = filter_round_instances(
+            label_map, instances,
+            min_circularity=args.min_circularity,
+            min_axis_ratio=args.min_axis_ratio,
+        )
+
         if args.save_fig:
             plt.figure()
             plt.imshow(image)
@@ -526,6 +681,15 @@ def main(args,
             hf.attrs["sam2_tag"] = tag
             for k, v in amg_params(args).items():
                 hf.attrs[f"amg_{k}"] = v
+            hf.attrs["min_circularity"] = args.min_circularity
+            hf.attrs["min_axis_ratio"] = args.min_axis_ratio
+            hf.attrs["merge_iou"] = args.merge_iou
+            hf.attrs["min_bright_fraction"] = args.min_bright_fraction
+            if bright_threshold is not None:
+                hf.attrs["bright_threshold"] = bright_threshold
+            if args.mask_aware:
+                hf.attrs["mask_path"] = os.path.abspath(mask_path)
+                hf.attrs["mask_min_inside"] = args.mask_min_inside
         print(f"saved {out_h5}")
 
 
@@ -577,6 +741,16 @@ if __name__ == "__main__":
         type=int,
         default=512,
         help='Patch size of the regular tiling (e.g. 256 for 20x images).'
+    )
+
+    parser.add_argument(
+        '--merge_iou',
+        type=float,
+        default=0.1,
+        help='Stitching: a detection is merged into an existing instance of a neighbouring patch '
+             'if their IoU is at least this, otherwise it becomes a new instance. Higher = fewer '
+             'merges (more split / duplicate fibres at patch borders), lower = more merges '
+             '(touching fibres may fuse). Default 0.1.'
     )
 
     parser.add_argument(
@@ -650,6 +824,38 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        '--min_bright_fraction',
+        type=float,
+        default=0.0,
+        help='Discard objects with less than this fraction of their pixels brighter than '
+             '--bright_threshold (fibres are bright, the matrix between them dark; e.g. 0.5). 0 = off.'
+    )
+
+    parser.add_argument(
+        '--bright_threshold',
+        type=float,
+        default=None,
+        help='Grey value separating bright fibres from the dark matrix. Default: Otsu threshold per '
+             'image (inside the mask in mask-aware mode). The used value is printed and saved in the .h5.'
+    )
+
+    parser.add_argument(
+        '--min_circularity',
+        type=float,
+        default=0.0,
+        help='Discard stitched instances with circularity 4*pi*A/P^2 below this (1 = disk; '
+             'e.g. 0.75 keeps nearly round fibre cross-sections). 0 = off.'
+    )
+
+    parser.add_argument(
+        '--min_axis_ratio',
+        type=float,
+        default=0.0,
+        help='Discard stitched instances whose minor/major axis ratio is below this (1 = round, '
+             'e.g. 0.6 drops elongated shapes). 0 = off.'
+    )
+
+    parser.add_argument(
         '--save_fig',
         action='store_true',
         help='If set, saves generated figures instead of only displaying them.'
@@ -660,6 +866,22 @@ if __name__ == "__main__":
         action='store_true',
         help="If set, use mask-guided patch extraction instead of a regular grid. "
              "Requires a '<stem>.mask.<ext>' file next to each image; errors out if missing."
+    )
+
+    parser.add_argument(
+        '--mask',
+        type=str,
+        default=None,
+        help="Explicit mask file for a single --input image (e.g. data/.../01.mask.tif). "
+             "Implies --mask_aware. Without it, '<stem>.mask.<ext>' next to the image is used."
+    )
+
+    parser.add_argument(
+        '--mask_min_inside',
+        type=float,
+        default=0.5,
+        help='Mask-aware mode: reject detected objects with less than this fraction of their pixels '
+             'inside the mask (default 0.5; 1.0 = only objects completely inside, 0 = off).'
     )
 
     parser.add_argument(
@@ -706,6 +928,14 @@ if __name__ == "__main__":
     else:
         args.dir_flag = False
         print("Input is a single file ")
+
+    if args.mask is not None:
+        if args.dir_flag:
+            parser.error("--mask needs a single image as --input; for a directory the "
+                         "'<stem>.mask.<ext>' companions are used with --mask_aware.")
+        if not os.path.isfile(args.mask):
+            parser.error(f"mask file '{args.mask}' not found.")
+        args.mask_aware = True
 
 
     # If output not given → create results folder in input path
