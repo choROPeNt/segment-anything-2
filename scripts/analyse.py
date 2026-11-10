@@ -29,6 +29,7 @@ from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.addons import (Sam2Patcher,
                          generate_upscaled,
+                         add_previews,
                          show_anns, 
                          write_h5, 
                          delete_h5_if_exists)
@@ -690,6 +691,8 @@ def main(args,
             if args.mask_aware:
                 hf.attrs["mask_path"] = os.path.abspath(mask_path)
                 hf.attrs["mask_min_inside"] = args.mask_min_inside
+        if args.preview:
+            add_previews(out_h5, args.preview)
         print(f"saved {out_h5}")
 
 
@@ -853,6 +856,14 @@ if __name__ == "__main__":
         default=0.0,
         help='Discard stitched instances whose minor/major axis ratio is below this (1 = round, '
              'e.g. 0.6 drops elongated shapes). 0 = off.'
+    )
+
+    parser.add_argument(
+        '--preview',
+        type=int,
+        default=2,
+        help='Also store image_preview / labels_preview downscaled by this factor for viewing in H5Web '
+             '(VS Code; images wider than ~16384 px are not displayed). 0 = off.'
     )
 
     parser.add_argument(

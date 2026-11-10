@@ -1,6 +1,6 @@
 from .vizualization import show_anns, overlay_from_instances
 from .patcher import Sam2Patcher, generate_upscaled, downscale_detection
-from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5, read_instance_centroids
+from .h5tools import write_h5, read_h5, delete_h5_if_exists, specimen_to_h5, read_instance_centroids, add_previews
 from .descriptors import (
     s2_descriptor,
     phi_descriptor,
@@ -15,6 +15,7 @@ from .labelkit_io import (
     read_labelkit_json,
     export_labels_to_labelkit,
     merge_corrected_labels,
+    h5_to_labkit,
 )
 from .sam2_dataset import (
     load_specimen_h5,
@@ -62,6 +63,38 @@ from .two_point import (
     c2_from_pcf,
     render_disks,
 )
+from .efd import (
+    mask_contour,
+    resample_contour,
+    efd,
+    efd_normalize,
+    efd_canonical_sign,
+    efd_reconstruct,
+    shape_features,
+    shape_prior,
+    mahalanobis,
+    robust_efd_fit,
+    curve_from_theta,
+    efd_fit_quality,
+    contour_defect,
+    fourier_fit_quality,
+    contour_notches,
+)
+from .yarn_stats import (
+    load_panorama,
+    yarn_regions,
+    fibre_table,
+    add_yarn_position,
+    valid_fibres,
+    concave_hull,
+    hull_outline,
+    delaunay_fvc,
+    delaunay_edges,
+    window_fvc,
+    weighted_quantile,
+    weighted_summary,
+    export_fvc_xdmf,
+)
 from .labelmap_tools import (
     iter_sam_masks,
     get_segmentation,
@@ -84,6 +117,7 @@ __all__ = [
     "delete_h5_if_exists",
     "specimen_to_h5",
     "read_instance_centroids",
+    "add_previews",
     # descriptors
     "s2_descriptor",
     "phi_descriptor",
@@ -97,6 +131,7 @@ __all__ = [
     "load_labkit_json",
     "read_labelkit_json",
     "export_labels_to_labelkit",
+    "h5_to_labkit",
     "merge_corrected_labels",
     # label maps
     "iter_sam_masks",
@@ -147,4 +182,34 @@ __all__ = [
     "disk_covariance",
     "c2_from_pcf",
     "render_disks",
+    # elliptic Fourier descriptors
+    "mask_contour",
+    "resample_contour",
+    "efd",
+    "efd_normalize",
+    "efd_canonical_sign",
+    "efd_reconstruct",
+    "shape_features",
+    "shape_prior",
+    "mahalanobis",
+    "robust_efd_fit",
+    "curve_from_theta",
+    "efd_fit_quality",
+    "contour_defect",
+    "fourier_fit_quality",
+    "contour_notches",
+    # yarn statistics: fibre shape, Delaunay / window FVC
+    "load_panorama",
+    "yarn_regions",
+    "fibre_table",
+    "add_yarn_position",
+    "valid_fibres",
+    "concave_hull",
+    "hull_outline",
+    "delaunay_fvc",
+    "delaunay_edges",
+    "window_fvc",
+    "weighted_quantile",
+    "weighted_summary",
+    "export_fvc_xdmf",
 ]
