@@ -121,10 +121,39 @@ def _read_file(path, kind):
     if kind == "mask":
         return (np.asarray(Image.open(path)) > 0).astype(np.uint8)
     if kind == "labkit":
-        with contextlib.redirect_stdout(io.StringIO()):
-            lab, _ = load_labkit_json(path)
-        return lab.astype(np.uint32)
+        return read_labkit_labels(path)
     raise ValueError(kind)
+
+
+def read_labkit_labels(path, verbose=False):
+    """
+    Dense uint32 label map of a Labkit ``.labeling``. Numeric label names keep their id. Labels drawn in
+    Labkit under its default names ("Label 1", ...) get new ids after the largest numeric id, in natural
+    name order, so new fibres are not dropped. Empty labels are skipped.
+    """
+    import re
+    with contextlib.redirect_stdout(io.StringIO()):
+        lab, data = load_labkit_json(path)
+    lab = lab.astype(np.uint32)
+    W = data["interval"]["max"][0] - data["interval"]["min"][0] + 1
+    lin = [np.unique(np.asarray(c, np.int64) @ np.array([1, W])) for c in data["labels"].values() if c]
+    if lin:
+        _, cnt = np.unique(np.concatenate(lin), return_counts=True)
+        if (cnt > 1).any():
+            print(f"  warning: {path}: {int((cnt > 1).sum())} px belong to more than one label "
+                  "(the label written last wins, named labels after numeric ones)")
+    named = [k for k, c in data["labels"].items() if c and not k.strip().isdigit()]
+    if named:
+        named.sort(key=lambda k: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", k)])
+        xmin, ymin = data["interval"]["min"][:2]
+        nxt = int(max([int(k) for k, c in data["labels"].items() if c and k.strip().isdigit()] or [0])) + 1
+        for k in named:
+            xy = np.asarray(data["labels"][k], dtype=np.int64)
+            lab[xy[:, 1] - ymin, xy[:, 0] - xmin] = nxt
+            if verbose:
+                print(f"  {k!r} -> id {nxt}")
+            nxt += 1
+    return lab
 
 
 def _same_content(path, ds, kind):
