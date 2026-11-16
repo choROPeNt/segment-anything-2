@@ -95,6 +95,27 @@ from .yarn_stats import (
     weighted_summary,
     export_fvc_xdmf,
 )
+from .shape_compare import (
+    nested_variance,
+    effect_size,
+    wasserstein_scaled,
+    tost_welch,
+    classifier_test,
+    group_table,
+)
+from .fiber_benchmark import (
+    mask_ellipse,
+    detect_fibres,
+    suppress_duplicates,
+    read_annotator,
+    expert_consensus,
+    match_reference,
+    vf_overlap,
+    vf_union,
+    local_vf,
+    first_neighbour_distance,
+    summary_metrics,
+)
 from .labelmap_tools import (
     iter_sam_masks,
     get_segmentation,
@@ -133,6 +154,18 @@ __all__ = [
     "export_labels_to_labelkit",
     "h5_to_labkit",
     "merge_corrected_labels",
+    # fibre-detection benchmark (Yuksel et al. 2026)
+    "mask_ellipse",
+    "detect_fibres",
+    "suppress_duplicates",
+    "read_annotator",
+    "expert_consensus",
+    "match_reference",
+    "vf_overlap",
+    "vf_union",
+    "local_vf",
+    "first_neighbour_distance",
+    "summary_metrics",
     # label maps
     "iter_sam_masks",
     "get_segmentation",
@@ -212,4 +245,11 @@ __all__ = [
     "weighted_quantile",
     "weighted_summary",
     "export_fvc_xdmf",
+    # group comparison of nested descriptors
+    "nested_variance",
+    "effect_size",
+    "wasserstein_scaled",
+    "tost_welch",
+    "classifier_test",
+    "group_table",
 ]
