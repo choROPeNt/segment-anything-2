@@ -95,14 +95,6 @@ from .yarn_stats import (
     weighted_summary,
     export_fvc_xdmf,
 )
-from .shape_compare import (
-    nested_variance,
-    effect_size,
-    wasserstein_scaled,
-    tost_welch,
-    classifier_test,
-    group_table,
-)
 from .fiber_benchmark import (
     mask_ellipse,
     detect_fibres,
@@ -245,11 +237,4 @@ __all__ = [
     "weighted_quantile",
     "weighted_summary",
     "export_fvc_xdmf",
-    # group comparison of nested descriptors
-    "nested_variance",
-    "effect_size",
-    "wasserstein_scaled",
-    "tost_welch",
-    "classifier_test",
-    "group_table",
 ]
